@@ -1,0 +1,12 @@
+name: dem_downloader
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - flask
+  - rasterio
+  - pyproj
+  - fiona
+  - shapely
+  - numpy
+  - requests

@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+.env
+.env.*
+.DS_Store
+
+dem_downloader/output/
+dem_downloader/__pycache__/
+
+# ネストしていた clone のメタデータ（作業ツリーはコミット対象）
+**/.git.repo_backup/
+
+# DIM の再実行で増える出力
+kp_DIM/deep-image-matching/assets/**/results_*/

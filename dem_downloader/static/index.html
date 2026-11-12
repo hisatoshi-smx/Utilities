@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>国土地理院 DEM ダウンローダー</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+<link rel="stylesheet" href="/dem-static/style.css">
+</head>
+<body>
+<div id="layout">
+
+  <!-- ===== 左: 設定パネル ===== -->
+  <aside id="sidebar">
+    <div class="head">
+      <h1>DEM ダウンローダー <small>国土地理院 標高タイル</small></h1>
+      <button id="shutdownBtn" type="button" class="danger" title="サーバーを終了して、ブラウザとの接続を切ります">⏻ 接続を切る</button>
+    </div>
+
+    <section>
+      <h2>1. 参照ファイル <span class="opt">任意</span></h2>
+      <p class="hint">GeoTIFF / Shapefile / GeoJSON / GPKG など、地理情報付きファイルの範囲を ROI に使えます。</p>
+      <div class="row">
+        <input id="refPath" type="text" placeholder="ファイルパス（/home/... ）" spellcheck="false">
+        <button id="refBrowse" type="button">参照…</button>
+      </div>
+      <div class="row">
+        <button id="refLoad" type="button">読み込んで地図に表示</button>
+        <button id="refClear" type="button" class="subtle">解除</button>
+      </div>
+      <div id="refInfo" class="info"></div>
+      <label class="check" id="useRefGridWrap">
+        <input id="useRefGrid" type="checkbox" disabled>
+        参照 GeoTIFF のグリッド（座標系・範囲・解像度）をそのまま使う
+      </label>
+    </section>
+
+    <section>
+      <h2>2. ROI（対象範囲）</h2>
+      <p class="hint">地図左上の □ ツールで矩形を描くか、地名検索・緯度経度入力で指定します。</p>
+      <label class="field">場所で検索
+        <div class="combo">
+          <input id="placeSearch" type="text" placeholder="例: 筑波市 / 東京駅 / 北見市" autocomplete="off" spellcheck="false">
+          <div id="placeList" class="combo-list" hidden></div>
+        </div>
+      </label>
+      <p class="hint">OpenStreetMap の地名データを使います（日本国内を優先）。候補を選ぶと ROI にその範囲を設定します。</p>
+      <div class="row">
+        <button id="drawRect" type="button">矩形を描画</button>
+        <button id="roiFromRef" type="button" class="subtle">参照ファイルの範囲にする</button>
+        <button id="roiClear" type="button" class="subtle">クリア</button>
+      </div>
+      <div class="roi-grid">
+        <label>北緯(N)<input id="north" type="number" step="any"></label>
+        <label>西経(W)<input id="west" type="number" step="any"></label>
+        <label>東経(E)<input id="east" type="number" step="any"></label>
+        <label>南緯(S)<input id="south" type="number" step="any"></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 出力設定</h2>
+
+      <label class="field">出力座標系
+        <div class="combo">
+          <input id="crsInput" type="text" placeholder="EPSG コード・名称で検索（例: 6677 / 平面直角 / UTM 54）" autocomplete="off" spellcheck="false">
+          <div id="crsList" class="combo-list" hidden></div>
+        </div>
+      </label>
+      <div id="crsNote" class="hint"></div>
+
+      <div class="row two">
+        <label class="field">解像度 (GSD)
+          <div class="with-unit">
+            <input id="gsd" type="number" step="any" min="0" placeholder="自動（最高解像度）">
+            <span id="gsdUnit">m</span>
+          </div>
+        </label>
+        <label class="field">DEM ソース
+          <select id="source"></select>
+        </label>
+      </div>
+      <p class="hint">GSD を空欄にすると、元タイルの解像度を落とさない値を自動で選びます。</p>
+
+      <label class="field">保存先フォルダ
+        <div class="row">
+          <input id="outDir" type="text" spellcheck="false">
+          <button id="outBrowse" type="button">参照…</button>
+        </div>
+      </label>
+      <label class="field">ファイル名
+        <input id="outName" type="text" value="dem.tif" spellcheck="false">
+      </label>
+      <label class="check"><input id="exportRoiKml" type="checkbox"> ROI を KML でも保存する（保存先フォルダ/roi/ に GeoTIFF と同名の .kml）</label>
+
+      <details>
+        <summary>詳細設定</summary>
+        <div class="row two">
+          <label class="field">並列ダウンロード数
+            <input id="workers" type="number" min="1" max="8" value="4">
+          </label>
+          <div>
+            <label class="check"><input id="useCache" type="checkbox" checked> タイルキャッシュを使う</label>
+            <label class="check"><input id="overwrite" type="checkbox"> 同名ファイルを上書き</label>
+          </div>
+        </div>
+        <p class="hint">並列数を増やしすぎると国土地理院のサーバーに負荷がかかります。</p>
+      </details>
+    </section>
+
+    <section>
+      <h2>4. 見積もり</h2>
+      <div id="estimate" class="info">ROI を指定してください。</div>
+      <div class="row">
+        <button id="runBtn" type="button" class="primary" disabled>ダウンロード開始</button>
+        <button id="cancelBtn" type="button" class="danger" disabled>キャンセル</button>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ===== 右: 地図 + 進捗/ログ ===== -->
+  <main id="main">
+    <div id="map"></div>
+
+    <div id="bottom">
+      <div id="progressBox">
+        <div class="progress-head">
+          <span id="stage">待機中</span>
+          <span id="pct">0%</span>
+        </div>
+        <div class="bar"><div id="barFill"></div></div>
+        <div class="progress-foot">
+          <span>経過 <b id="elapsed">--</b></span>
+          <span>推定残り時間 <b id="eta">--</b></span>
+          <span id="resultMsg"></span>
+        </div>
+      </div>
+      <div id="logHead">
+        <b>ログ</b>
+        <span id="logPath" class="hint"></span>
+        <span class="spacer"></span>
+        <button id="logSave" type="button" disabled>ログを保存</button>
+        <button id="logClear" type="button" class="subtle">表示をクリア</button>
+      </div>
+      <div id="log" aria-live="polite"></div>
+    </div>
+  </main>
+</div>
+
+<!-- ===== ファイル/フォルダ選択ダイアログ ===== -->
+<div id="fsModal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-title" id="fsTitle">ファイルを選択</div>
+    <div class="row">
+      <button id="fsUp" type="button">↑ 上へ</button>
+      <input id="fsPath" type="text" spellcheck="false">
+      <button id="fsGo" type="button">移動</button>
+    </div>
+    <div id="fsShortcuts" class="shortcuts"></div>
+    <div id="fsMkRow" class="row" hidden>
+      <button id="fsMkBtn" type="button">＋ 新規フォルダ</button>
+      <div id="fsMkForm" class="row grow" hidden>
+        <input id="fsMkName" type="text" placeholder="新しいフォルダ名（このフォルダの中に作成）" spellcheck="false">
+        <button id="fsMkOk" type="button" class="primary">作成</button>
+        <button id="fsMkCancel" type="button">やめる</button>
+      </div>
+    </div>
+    <div id="fsMsg" class="info error" hidden></div>
+    <div id="fsList" class="fs-list"></div>
+    <div class="row between">
+      <div>
+        <label class="check inline" id="fsAllWrap"><input id="fsAll" type="checkbox"> すべてのファイルを表示</label>
+        <label class="check inline"><input id="fsHidden" type="checkbox"> 隠しファイル</label>
+      </div>
+      <div>
+        <button id="fsChoose" type="button" class="primary" hidden>このフォルダを選択</button>
+        <button id="fsCancel" type="button">閉じる</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== サーバー終了後の表示 ===== -->
+<div id="bye" class="modal" hidden>
+  <div class="modal-box bye-box">
+    <div class="modal-title">サーバーを終了しました</div>
+    <p>接続を切りました。このタブは閉じて構いません。</p>
+    <p class="hint">再び使うときは、ターミナルで <code>python run_dem_gui.py</code> を実行してください。</p>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="/dem-static/app.js"></script>
+</body>
+</html>
