@@ -206,7 +206,7 @@ def _export_roi_kml(job: Job, grid, output_path: str) -> str:
     return kml_path
 
 
-def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_kml: bool):
+def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_kml: bool, height_mode: str):
     kml_path = None
     try:
         job.log(f"ジョブ開始 (ID: {job.id})")
@@ -218,6 +218,7 @@ def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_k
             output_path,
             workers=workers,
             use_cache=use_cache,
+            height_mode=height_mode,
             cancel=job.cancel_event,
             log=job.log,
             progress=job.set_progress,
@@ -263,6 +264,33 @@ def _float(body, key, required=True):
     return f
 
 
+def _parse_height_mode(body) -> str:
+    try:
+        return dem_core.parse_height_mode(body.get("height_mode", "geoid"))
+    except ValueError as e:
+        raise ApiError(str(e))
+
+
+def _roi_wgs84_from_body(body) -> tuple[float, float, float, float]:
+    rc = body.get("roi_center")
+    if rc:
+        lon = _float(rc, "lon")
+        lat = _float(rc, "lat")
+        side_km = _float(rc, "side_km")
+        try:
+            return geo_io.roi_from_center_km(lon, lat, side_km)
+        except ValueError as e:
+            raise ApiError(str(e))
+    roi = body.get("roi") or {}
+    west, south = _float(roi, "west"), _float(roi, "south")
+    east, north = _float(roi, "east"), _float(roi, "north")
+    if not (-180 <= west < east <= 180):
+        raise ApiError("ROI の経度の範囲が不正です（-180 ≤ 西 < 東 ≤ 180）。")
+    if not (-90 <= south < north <= 90):
+        raise ApiError("ROI の緯度の範囲が不正です（-90 ≤ 南 < 北 ≤ 90）。")
+    return west, south, east, north
+
+
 def _parse_grid(body):
     """リクエストから出力グリッド・DEM ソース・並列数などを解釈する。"""
     mode = body.get("source", "auto")
@@ -271,6 +299,7 @@ def _parse_grid(body):
 
     workers = int(body.get("workers", 4) or 4)
     workers = max(1, min(8, workers))
+    height_mode = _parse_height_mode(body)
 
     if body.get("use_reference_grid"):
         ref = body.get("reference_path")
@@ -281,19 +310,13 @@ def _parse_grid(body):
             raise ApiError(f"参照ファイルが見つかりません: {ref}")
         grid = dem_core.grid_from_reference(ref)
     else:
-        roi = body.get("roi") or {}
-        west, south = _float(roi, "west"), _float(roi, "south")
-        east, north = _float(roi, "east"), _float(roi, "north")
-        if not (-180 <= west < east <= 180):
-            raise ApiError("ROI の経度の範囲が不正です（-180 ≤ 西 < 東 ≤ 180）。")
-        if not (-90 <= south < north <= 90):
-            raise ApiError("ROI の緯度の範囲が不正です（-90 ≤ 南 < 北 ≤ 90）。")
+        west, south, east, north = _roi_wgs84_from_body(body)
         crs = geo_io.parse_crs(body.get("crs"))
         gsd = _float(body, "gsd", required=False)
         if gsd is not None and gsd <= 0:
             raise ApiError("GSD は正の値を指定してください。")
         grid = dem_core.grid_from_roi((west, south, east, north), crs, gsd, mode)
-    return grid, mode, workers
+    return grid, mode, workers, height_mode
 
 
 # ----------------------------------------------------------------------------
@@ -312,6 +335,7 @@ def api_config():
         default_output_dir=DEFAULT_OUTPUT_DIR,
         home=os.path.expanduser("~"),
         sources=[{"id": k, "label": v} for k, v in dem_core.SOURCE_MODE_LABELS.items()],
+        height_modes=[{"id": k, "label": v} for k, v in dem_core.HEIGHT_MODE_LABELS.items()],
         max_tiles=dem_core.MAX_TILES,
         cache_dir=dem_core.DEFAULT_CACHE_DIR,
     )
@@ -355,6 +379,35 @@ def api_crs_info():
     return jsonify(geo_io.crs_info(request.args.get("code", "")))
 
 
+@app.post("/api/roi/from-center")
+def api_roi_from_center():
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        west, south, east, north = geo_io.roi_from_center_km(
+            _float(body, "lon"),
+            _float(body, "lat"),
+            _float(body, "side_km"),
+        )
+    except ValueError as e:
+        raise ApiError(str(e))
+    return jsonify(west=west, south=south, east=east, north=north)
+
+
+@app.post("/api/roi/distance-km")
+def api_roi_distance_km():
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        d = geo_io.geodesic_distance_km(
+            _float(body, "lon1"),
+            _float(body, "lat1"),
+            _float(body, "lon2"),
+            _float(body, "lat2"),
+        )
+    except ValueError as e:
+        raise ApiError(str(e))
+    return jsonify(distance_km=d)
+
+
 @app.get("/api/geocode")
 def api_geocode():
     q = request.args.get("q", "").strip()
@@ -369,7 +422,7 @@ def api_geocode():
 @app.post("/api/estimate")
 def api_estimate():
     body = request.get_json(force=True, silent=True) or {}
-    grid, mode, workers = _parse_grid(body)
+    grid, mode, workers, _height_mode = _parse_grid(body)
     est = dem_core.estimate(grid, mode, workers)
     est["crs_name"] = grid.crs.name
     est["is_geographic"] = bool(grid.crs.is_geographic)
@@ -381,7 +434,7 @@ def api_estimate():
 def api_start_job():
     global _current_job_id
     body = request.get_json(force=True, silent=True) or {}
-    grid, mode, workers = _parse_grid(body)
+    grid, mode, workers, height_mode = _parse_grid(body)
 
     out_dir = (body.get("output_dir") or "").strip() or DEFAULT_OUTPUT_DIR
     name = (body.get("output_name") or "").strip() or "dem.tif"
@@ -431,7 +484,7 @@ def api_start_job():
     job.log(f"ログファイル: {log_path}")
     threading.Thread(
         target=_run_job,
-        args=(job, grid, mode, output_path, workers, bool(body.get("use_cache", True)), export_roi_kml),
+        args=(job, grid, mode, output_path, workers, bool(body.get("use_cache", True)), export_roi_kml, height_mode),
         daemon=True,
     ).start()
     return jsonify(job.snapshot())

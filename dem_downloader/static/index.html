@@ -38,7 +38,7 @@
 
     <section>
       <h2>2. ROI（対象範囲）</h2>
-      <p class="hint">地図左上の □ ツールで矩形を描くか、地名検索・緯度経度入力で指定します。</p>
+      <p class="hint">地図左上の □ ツールで矩形を描くか、地名検索・中心＋一辺(km)・四隅の緯度経度で指定します。</p>
       <label class="field">場所で検索
         <div class="combo">
           <input id="placeSearch" type="text" placeholder="例: 筑波市 / 東京駅 / 北見市" autocomplete="off" spellcheck="false">
@@ -51,6 +51,22 @@
         <button id="roiFromRef" type="button" class="subtle">参照ファイルの範囲にする</button>
         <button id="roiClear" type="button" class="subtle">クリア</button>
       </div>
+      <p class="hint section-label">中心点＋正方形の一辺（km）</p>
+      <div class="roi-grid roi-grid-3">
+        <label>中心 経度<input id="centerLon" type="number" step="any" placeholder="例: 140.08"></label>
+        <label>中心 緯度<input id="centerLat" type="number" step="any" placeholder="例: 36.09"></label>
+        <label>一辺 (km)<input id="centerSideKm" type="number" step="any" min="0" placeholder="例: 2"></label>
+      </div>
+      <div class="row">
+        <button id="pickCenterOnMap" type="button" class="subtle">地図で中心を指定</button>
+        <button id="pickSideOnMap" type="button" class="subtle">地図で一辺を指定</button>
+      </div>
+      <p class="hint">一辺の指定は、中心から辺の方向へクリックします（その距離の 2 倍が正方形の一辺 km になります）。</p>
+      <div id="roiMapHint" class="info map-pick-hint" hidden></div>
+      <div class="row">
+        <button id="roiFromCenter" type="button">この中心と一辺で ROI を設定</button>
+      </div>
+      <p class="hint section-label">矩形の四隅（WGS84）</p>
       <div class="roi-grid">
         <label>北緯(N)<input id="north" type="number" step="any"></label>
         <label>西経(W)<input id="west" type="number" step="any"></label>
@@ -69,6 +85,13 @@
         </div>
       </label>
       <div id="crsNote" class="hint"></div>
+
+      <fieldset class="height-mode">
+        <legend>標高の種類</legend>
+        <label class="check inline"><input type="radio" name="heightMode" id="heightGeoid" value="geoid" checked> ジオイド高（正常高・GSI タイルそのまま）</label>
+        <label class="check inline"><input type="radio" name="heightMode" id="heightEllipsoid" value="ellipsoid"> 楕円体高（WGS 84 楕円体上）</label>
+      </fieldset>
+      <p class="hint">国土地理院タイルはジオイド2011 に基づく正常高です。楕円体高を選ぶとジオイド上の差を加算して保存します。</p>
 
       <div class="row two">
         <label class="field">解像度 (GSD)

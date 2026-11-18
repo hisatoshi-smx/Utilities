@@ -76,8 +76,11 @@ L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
 
 const drawn = new L.FeatureGroup().addTo(map);
+const roiCenterLayer = new L.FeatureGroup().addTo(map);
 let refLayer = null;
 const roiStyle = { color: "#e11d48", weight: 2, fillOpacity: 0.12 };
+const centerMarkerStyle = { radius: 7, color: "#1d4ed8", weight: 2, fillColor: "#3b82f6", fillOpacity: 0.85 };
+const sideGuideStyle = { color: "#2563eb", weight: 2, dashArray: "6 6", opacity: 0.9 };
 const drawOptions = { rectangle: { showArea: false, shapeOptions: roiStyle } };
 
 const drawControl = new L.Control.Draw({
@@ -88,6 +91,7 @@ const drawControl = new L.Control.Draw({
 map.addControl(drawControl);
 
 map.on(L.Draw.Event.CREATED, (e) => {
+  exitRoiPickMode();
   drawn.clearLayers();
   drawn.addLayer(e.layer);
   setRoiFromBounds(e.layer.getBounds(), { fromMap: true });
@@ -98,18 +102,29 @@ map.on(L.Draw.Event.EDITED, () => {
 });
 map.on(L.Draw.Event.DELETED, () => { if (!drawn.getLayers().length) clearRoi(); });
 
-$("drawRect").onclick = () => new L.Draw.Rectangle(map, drawOptions.rectangle).enable();
+$("drawRect").onclick = () => {
+  exitRoiPickMode();
+  new L.Draw.Rectangle(map, drawOptions.rectangle).enable();
+};
 
 // ============================================================================
 // ROI
 // ============================================================================
 const roiInputs = ["north", "west", "east", "south"];
 
+function syncCenterFieldsFromRoi(roi) {
+  if (!roi) return;
+  const r = (v) => Number(v.toFixed(7));
+  $("centerLon").value = r((roi.west + roi.east) / 2);
+  $("centerLat").value = r((roi.south + roi.north) / 2);
+}
+
 function setRoi(roi, { fit = false, fromMap = false } = {}) {
   state.roi = roi;
   const r = (v) => Number(v.toFixed(7));
   $("west").value = r(roi.west); $("east").value = r(roi.east);
   $("south").value = r(roi.south); $("north").value = r(roi.north);
+  syncCenterFieldsFromRoi(roi);
   if (!fromMap) {
     drawn.clearLayers();
     L.rectangle([[roi.south, roi.west], [roi.north, roi.east]], roiStyle).addTo(drawn);
@@ -125,6 +140,7 @@ function setRoiFromBounds(b, opts) {
 function clearRoi() {
   state.roi = null;
   drawn.clearLayers();
+  roiCenterLayer.clearLayers();
   roiInputs.forEach((id) => ($(id).value = ""));
   scheduleEstimate();
 }
@@ -154,6 +170,139 @@ $("roiFromRef").onclick = () => {
   const [w, s, e, n] = state.ref.bounds_wgs84;
   setRoi({ west: w, south: s, east: e, north: n }, { fit: true });
 };
+
+const centerInputs = ["centerLon", "centerLat", "centerSideKm"];
+let roiPickMode = null; // "center" | "side" | null
+
+function readCenterFields() {
+  const lon = parseFloat($("centerLon").value);
+  const lat = parseFloat($("centerLat").value);
+  if (![lon, lat].every((v) => Number.isFinite(v))) return null;
+  return { lon, lat };
+}
+
+function showCenterOnMap(lon, lat) {
+  roiCenterLayer.clearLayers();
+  L.circleMarker([lat, lon], centerMarkerStyle).addTo(roiCenterLayer)
+    .bindTooltip("ROI の中心", { direction: "top", offset: [0, -6] });
+}
+
+function exitRoiPickMode() {
+  roiPickMode = null;
+  $("pickCenterOnMap").classList.remove("map-pick-on");
+  $("pickSideOnMap").classList.remove("map-pick-on");
+  map.getContainer().classList.remove("map-crosshair");
+  const h = $("roiMapHint");
+  h.hidden = true;
+  h.textContent = "";
+  map.off("click", onRoiMapClick);
+}
+
+function startRoiPickMode(mode) {
+  if ($("useRefGrid").checked) return alert("参照グリッド使用中は ROI を変更できません。");
+  if (roiPickMode === mode) {
+    exitRoiPickMode();
+    return;
+  }
+  exitRoiPickMode();
+  roiPickMode = mode;
+  map.getContainer().classList.add("map-crosshair");
+  const h = $("roiMapHint");
+  h.hidden = false;
+  if (mode === "center") {
+    $("pickCenterOnMap").classList.add("map-pick-on");
+    h.textContent = "地図をクリックして正方形の中心を指定してください（Esc で中止）。";
+  } else {
+    if (!readCenterFields()) return alert("先に中心の経度・緯度を入力するか、「地図で中心を指定」で中心を決めてください。"), exitRoiPickMode();
+    $("pickSideOnMap").classList.add("map-pick-on");
+    h.textContent = "中心から辺の方向へクリックして一辺の長さを決めます（Esc で中止）。";
+  }
+  map.on("click", onRoiMapClick);
+}
+
+async function applyCenterRoi({ fit = true } = {}) {
+  const lon = parseFloat($("centerLon").value);
+  const lat = parseFloat($("centerLat").value);
+  const side_km = parseFloat($("centerSideKm").value);
+  if (![lon, lat, side_km].every((v) => Number.isFinite(v))) {
+    throw new Error("中心の経度・緯度と一辺の長さ (km) を数値で入力してください。");
+  }
+  if (side_km <= 0) throw new Error("一辺の長さは正の値 (km) にしてください。");
+  const r = await post("/api/roi/from-center", { lon, lat, side_km });
+  if ($("useRefGrid").checked) $("useRefGrid").checked = false, applyRefGridMode();
+  showCenterOnMap(lon, lat);
+  setRoi({ west: r.west, south: r.south, east: r.east, north: r.north }, { fit });
+}
+
+async function onRoiMapClick(ev) {
+  if (!roiPickMode) return;
+  const lat = ev.latlng.lat;
+  const lon = ev.latlng.lng;
+  if (roiPickMode === "center") {
+    $("centerLon").value = Number(lon.toFixed(7));
+    $("centerLat").value = Number(lat.toFixed(7));
+    showCenterOnMap(lon, lat);
+    exitRoiPickMode();
+    scheduleCenterPreview();
+    return;
+  }
+  const c = readCenterFields();
+  if (!c) {
+    exitRoiPickMode();
+    return alert("中心座標がありません。");
+  }
+  try {
+    const { distance_km } = await post("/api/roi/distance-km", {
+      lon1: c.lon, lat1: c.lat, lon2: lon, lat2: lat,
+    });
+    if (distance_km <= 0) throw new Error("中心とクリック位置が同じです。離れた位置をクリックしてください。");
+    const side_km = distance_km * 2;
+    $("centerSideKm").value = Number(side_km.toPrecision(6));
+    roiCenterLayer.clearLayers();
+    showCenterOnMap(c.lon, c.lat);
+    L.polyline([[c.lat, c.lon], [lat, lon]], sideGuideStyle).addTo(roiCenterLayer);
+    await applyCenterRoi({ fit: true });
+    exitRoiPickMode();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+let centerPreviewSeq = 0;
+const scheduleCenterPreview = debounce(async () => {
+  const c = readCenterFields();
+  const side_km = parseFloat($("centerSideKm").value);
+  if (!c || !Number.isFinite(side_km) || side_km <= 0) return;
+  const my = ++centerPreviewSeq;
+  try {
+    const r = await post("/api/roi/from-center", { lon: c.lon, lat: c.lat, side_km });
+    if (my !== centerPreviewSeq) return;
+    const c0 = readCenterFields();
+    roiCenterLayer.clearLayers();
+    if (c0) L.circleMarker([c0.lat, c0.lon], centerMarkerStyle).addTo(roiCenterLayer);
+    L.rectangle([[r.south, r.west], [r.north, r.east]], { ...roiStyle, dashArray: "5 5", fillOpacity: 0.06 }).addTo(roiCenterLayer);
+  } catch (_) { /* プレビュー失敗は無視 */ }
+}, 400);
+
+centerInputs.forEach((id) => $(id).addEventListener("input", () => {
+  const c = readCenterFields();
+  if (c) showCenterOnMap(c.lon, c.lat);
+  scheduleCenterPreview();
+}));
+
+$("pickCenterOnMap").onclick = () => startRoiPickMode("center");
+$("pickSideOnMap").onclick = () => startRoiPickMode("side");
+$("roiFromCenter").onclick = async () => {
+  try {
+    await applyCenterRoi({ fit: true });
+  } catch (e) {
+    alert(e.message);
+  }
+};
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && roiPickMode) exitRoiPickMode();
+});
 
 // --- 地名検索 (Nominatim 経由) ---
 const placeSearch = $("placeSearch"), placeList = $("placeList");
@@ -539,7 +688,12 @@ function applyRefGridMode() {
   crsInput.disabled = on;
   $("gsd").disabled = on;
   roiInputs.forEach((id) => ($(id).disabled = on));
+  centerInputs.forEach((id) => ($(id).disabled = on));
+  $("roiFromCenter").disabled = on;
+  $("pickCenterOnMap").disabled = on;
+  $("pickSideOnMap").disabled = on;
   $("drawRect").disabled = on;
+  if (on) exitRoiPickMode();
   if (on) setInfo($("crsNote"), "参照 GeoTIFF のグリッドを使うため、座標系・範囲・解像度は参照ファイルのものになります。");
   else if (!state.crs.geographic) setInfo($("crsNote"), "");
   scheduleEstimate();
@@ -560,6 +714,7 @@ function buildParams() {
     use_cache: $("useCache").checked,
     use_reference_grid: !!useRef,
     reference_path: state.ref ? state.ref.path : null,
+    height_mode: document.querySelector('input[name="heightMode"]:checked')?.value || "geoid",
   };
 }
 
@@ -606,6 +761,7 @@ async function doEstimate() {
 }
 const scheduleEstimate = debounce(doEstimate, 350);
 ["gsd", "source", "workers"].forEach((id) => $(id).addEventListener("change", scheduleEstimate));
+document.querySelectorAll('input[name="heightMode"]').forEach((el) => el.addEventListener("change", scheduleEstimate));
 $("gsd").addEventListener("input", scheduleEstimate);
 
 // ============================================================================

@@ -35,9 +35,9 @@ from typing import Callable, Optional
 import numpy as np
 import rasterio
 import requests
-from pyproj import CRS
+from pyproj import CRS, Transformer
 from rasterio.transform import Affine, array_bounds, from_origin
-from rasterio.warp import Resampling, calculate_default_transform, reproject, transform_bounds
+from rasterio.warp import Resampling, calculate_default_transform, reproject, transform as warp_transform, transform_bounds
 from rasterio.windows import Window
 
 # ----------------------------------------------------------------------------
@@ -91,6 +91,15 @@ SOURCE_MODE_LABELS = {
     "dem5b": "DEM5B のみ",
     "dem10b": "DEM10B のみ（10m）",
 }
+
+# 国土地理院タイルの標高はジオイド2011 に基づく正常高（ジオイド高）。
+HEIGHT_MODE_LABELS = {
+    "geoid": "ジオイド高（標高・正常高／GSI タイルそのまま）",
+    "ellipsoid": "楕円体高（WGS 84 楕円体上の高さへ変換）",
+}
+_ORTHO_COMPOUND = CRS.from_epsg(6697)  # JGD2024 + JGD2011 (vertical) height
+_ELLIPSOID_3D = CRS.from_epsg(4327)  # WGS 84 geographic 3D
+_ORTHO_TO_ELLIP = Transformer.from_crs(_ORTHO_COMPOUND, _ELLIPSOID_3D, always_xy=True)
 
 DEFAULT_CACHE_DIR = os.environ.get(
     "DEM_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "dem_downloader", "tiles")
@@ -561,6 +570,38 @@ def _warp_band(mosaic: Mosaic, shape, band_transform, dst_crs):
     return dst
 
 
+def parse_height_mode(value: str) -> str:
+    mode = (value or "geoid").strip().lower()
+    if mode not in HEIGHT_MODE_LABELS:
+        raise ValueError(f"高さの種類は geoid または ellipsoid を指定してください (指定値: {value!r})")
+    return mode
+
+
+def apply_height_mode(
+    heights: np.ndarray,
+    band_transform: Affine,
+    dst_crs: CRS,
+    height_mode: str,
+) -> np.ndarray:
+    """国土地理院のジオイド高を、必要に応じて楕円体高 (WGS 84) へ変換する。"""
+    if height_mode == "geoid":
+        return heights
+    rows, cols = np.indices(heights.shape)
+    xs, ys = rasterio.transform.xy(band_transform, rows.ravel(), cols.ravel(), offset="center")
+    lon, lat = warp_transform(dst_crs, "EPSG:6668", xs, ys)
+    flat = heights.ravel()
+    valid = flat != NODATA
+    if not np.any(valid):
+        return heights
+    lon_v = np.asarray(lon, dtype=np.float64)[valid]
+    lat_v = np.asarray(lat, dtype=np.float64)[valid]
+    h_v = flat[valid].astype(np.float64, copy=False)
+    _, _, h_ell = _ORTHO_TO_ELLIP.transform(lon_v, lat_v, h_v)
+    out = flat.copy()
+    out[valid] = h_ell.astype(np.float32)
+    return out.reshape(heights.shape)
+
+
 def run_download(
     grid: Grid,
     mode: str,
@@ -570,11 +611,13 @@ def run_download(
     use_cache: bool = True,
     cache_dir: Optional[str] = None,
     delay: float = 0.05,
+    height_mode: str = "geoid",
     cancel: Optional[threading.Event] = None,
     log: Callable = lambda msg, level="INFO": print(f"[{level}] {msg}"),
     progress: Callable = lambda fraction, stage, eta: None,
 ) -> dict:
     """DEM をダウンロードして output_path に GeoTIFF を書き出す。結果の概要を dict で返す。"""
+    height_mode = parse_height_mode(height_mode)
     cancel = cancel or threading.Event()
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     t_start = time.time()
@@ -593,6 +636,7 @@ def run_download(
         f"GSD: {abs(grid.transform.a):.8g} x {abs(grid.transform.e):.8g} (座標系の単位)"
     )
     log(f"DEM ソース: {SOURCE_MODE_LABELS[mode]}")
+    log(f"標高の種類: {HEIGHT_MODE_LABELS[height_mode]}")
     log(f"取得タイル数(第1レイヤ): {plan.n_tiles} 枚 / 並列数: {workers} / キャッシュ: {'使用' if use_cache else '不使用'}")
 
     fetcher = TileFetcher(workers, use_cache, cache_dir, delay, cancel, log)
@@ -646,6 +690,12 @@ def run_download(
             dst.update_tags(
                 SOURCE="Geospatial Information Authority of Japan (GSI) elevation tiles",
                 DEM_MODE=mode,
+                HEIGHT_MODE=height_mode,
+                VERTICAL_REFERENCE=(
+                    "JGD2011 geoid height (orthometric)"
+                    if height_mode == "geoid"
+                    else "WGS 84 ellipsoidal height"
+                ),
             )
             for b in range(n_bands):
                 if cancel.is_set():
@@ -661,6 +711,7 @@ def run_download(
                     if hole.any():
                         fill = _warp_band(extra, shape, band_tf, grid.crs)
                         out[hole] = fill[hole]
+                out = apply_height_mode(out, band_tf, grid.crs, height_mode)
                 valid_total += int((out != NODATA).sum())
                 dst.write(out, 1, window=Window(0, row0, grid.width, rows))
 
@@ -697,4 +748,5 @@ def run_download(
         "valid_ratio": ratio,
         "elapsed": elapsed,
         "tile_stats": dict(st),
+        "height_mode": height_mode,
     }

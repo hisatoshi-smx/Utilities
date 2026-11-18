@@ -17,7 +17,7 @@ import xml.sax.saxutils as xml_escape
 import fiona
 import rasterio
 import requests
-from pyproj import CRS, Transformer
+from pyproj import CRS, Geod, Transformer
 from pyproj.database import query_crs_info
 from pyproj.enums import PJType
 from shapely.geometry import mapping, shape
@@ -312,6 +312,38 @@ def _inspect_vector(path: str) -> dict:
             "geojson": {"type": "FeatureCollection", "features": features},
             **_crs_summary(crs),
         }
+
+
+_GEO_WGS84 = Geod(ellps="WGS84")
+
+
+def roi_from_center_km(lon: float, lat: float, side_km: float) -> tuple[float, float, float, float]:
+    """
+    中心点 (lon, lat) と正方形の一辺の長さ side_km から WGS84 の ROI (west, south, east, north) を求める。
+    距離は WGS84 楕円体上の測地線で半辺分ずつ東西南北に伸ばす。
+    """
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise ValueError("中心点の緯度・経度が不正です。")
+    if not math.isfinite(side_km) or side_km <= 0:
+        raise ValueError("一辺の長さは正の値 (km) を指定してください。")
+    half_m = side_km * 500.0
+    lon_w, _, _ = _GEO_WGS84.fwd(lon, lat, 270, half_m)
+    lon_e, _, _ = _GEO_WGS84.fwd(lon, lat, 90, half_m)
+    _, lat_n, _ = _GEO_WGS84.fwd(lon, lat, 0, half_m)
+    _, lat_s, _ = _GEO_WGS84.fwd(lon, lat, 180, half_m)
+    west, east = min(lon_w, lon_e), max(lon_w, lon_e)
+    south, north = min(lat_s, lat_n), max(lat_s, lat_n)
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        raise ValueError("算出した ROI が有効範囲を超えています。中心位置または一辺の長さを見直してください。")
+    return west, south, east, north
+
+
+def geodesic_distance_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    """WGS84 測地線上の 2 点間距離 (km)。"""
+    if not all(math.isfinite(x) for x in (lon1, lat1, lon2, lat2)):
+        raise ValueError("緯度・経度が不正です。")
+    _, _, dist_m = _GEO_WGS84.inv(lon1, lat1, lon2, lat2)
+    return dist_m / 1000.0
 
 
 def bounds_to_wgs84(crs: CRS, bounds) -> tuple[float, float, float, float]:
