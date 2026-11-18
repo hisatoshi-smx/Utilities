@@ -119,6 +119,10 @@
 
       <details>
         <summary>詳細設定</summary>
+        <label class="field">欠損ピクセルの埋め値 (m)
+          <input id="nodataFill" type="number" step="any" value="0">
+        </label>
+        <p class="hint">データがない画素に書き込む標高です（既定 0）。従来どおり NoData (-9999) のまま残す場合は -9999 を指定してください。</p>
         <div class="row two">
           <label class="field">並列ダウンロード数
             <input id="workers" type="number" min="1" max="8" value="4">

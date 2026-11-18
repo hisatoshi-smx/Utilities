@@ -122,15 +122,49 @@ SNAP_DEM_GTIFF_PROFILE: dict = {
 }
 
 
-def dem_gtiff_profile(grid: Grid) -> dict:
+def dem_gtiff_profile(grid: Grid, *, file_nodata: Optional[float] = NODATA) -> dict:
     """出力グリッド向けの SNAP 互換 GeoTIFF プロファイル。"""
-    return {
+    profile = {
         **SNAP_DEM_GTIFF_PROFILE,
         "height": grid.height,
         "width": grid.width,
         "crs": grid.crs,
         "transform": grid.transform,
     }
+    if file_nodata is None:
+        profile.pop("nodata", None)
+    else:
+        profile["nodata"] = file_nodata
+    return profile
+
+
+def parse_nodata_fill(value) -> float:
+    """出力 GeoTIFF に書き込む欠損ピクセルの埋め値（既定 0）。"""
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return 0.0
+    try:
+        fill = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"欠損の埋め値が数値ではありません: {value!r}")
+    if not math.isfinite(fill):
+        raise ValueError("欠損の埋め値は有限の数値を指定してください。")
+    return fill
+
+
+def apply_nodata_fill(heights: np.ndarray, nodata_fill: float) -> tuple[np.ndarray, Optional[float]]:
+    """
+    内部欠損値 NODATA を出力用に処理する。
+    nodata_fill が NODATA と同じならそのまま残し、GeoTIFF の nodata タグも -9999。
+    それ以外は欠損セルを埋め値で置換し、nodata タグは付けない。
+    """
+    if nodata_fill == NODATA:
+        return heights, NODATA
+    mask = heights == NODATA
+    if not mask.any():
+        return heights, None
+    out = heights.copy()
+    out[mask] = np.float32(nodata_fill)
+    return out, None
 
 
 _RE_PREDICTOR_BAD = re.compile(r"Predictor:\s*(?:float|horizontal difference|3)\b", re.IGNORECASE)
@@ -612,12 +646,14 @@ def run_download(
     cache_dir: Optional[str] = None,
     delay: float = 0.05,
     height_mode: str = "geoid",
+    nodata_fill: float = 0.0,
     cancel: Optional[threading.Event] = None,
     log: Callable = lambda msg, level="INFO": print(f"[{level}] {msg}"),
     progress: Callable = lambda fraction, stage, eta: None,
 ) -> dict:
     """DEM をダウンロードして output_path に GeoTIFF を書き出す。結果の概要を dict で返す。"""
     height_mode = parse_height_mode(height_mode)
+    nodata_fill = parse_nodata_fill(nodata_fill)
     cancel = cancel or threading.Event()
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     t_start = time.time()
@@ -637,6 +673,10 @@ def run_download(
     )
     log(f"DEM ソース: {SOURCE_MODE_LABELS[mode]}")
     log(f"標高の種類: {HEIGHT_MODE_LABELS[height_mode]}")
+    if nodata_fill == NODATA:
+        log(f"欠損画素: NoData ({NODATA:g}) のまま出力します")
+    else:
+        log(f"欠損画素: {nodata_fill:g} で埋めて出力します（GeoTIFF の nodata タグは付けません）")
     log(f"取得タイル数(第1レイヤ): {plan.n_tiles} 枚 / 並列数: {workers} / キャッシュ: {'使用' if use_cache else '不使用'}")
 
     fetcher = TileFetcher(workers, use_cache, cache_dir, delay, cancel, log)
@@ -680,7 +720,8 @@ def run_download(
     # 1帯あたり約 2500 万ピクセル以内、行数は 256 の倍数(タイル構造に合わせる)
     band_rows = 256 * max(1, min(8, int(2.5e7 // (grid.width * 256))))
     n_bands = math.ceil(grid.height / band_rows)
-    profile = dem_gtiff_profile(grid)
+    file_nodata = NODATA if nodata_fill == NODATA else None
+    profile = dem_gtiff_profile(grid, file_nodata=file_nodata)
     log(f"再投影して書き出します（{n_bands} 帯 / 1帯 {band_rows} 行）")
 
     valid_total = 0
@@ -696,6 +737,7 @@ def run_download(
                     if height_mode == "geoid"
                     else "WGS 84 ellipsoidal height"
                 ),
+                NODATA_FILL=str(nodata_fill),
             )
             for b in range(n_bands):
                 if cancel.is_set():
@@ -713,6 +755,7 @@ def run_download(
                         out[hole] = fill[hole]
                 out = apply_height_mode(out, band_tf, grid.crs, height_mode)
                 valid_total += int((out != NODATA).sum())
+                out, _ = apply_nodata_fill(out, nodata_fill)
                 dst.write(out, 1, window=Window(0, row0, grid.width, rows))
 
                 done = b + 1
@@ -734,7 +777,10 @@ def run_download(
     ratio = valid_total / total_px
     size = os.path.getsize(output_path)
     elapsed = time.time() - t_start
-    log(f"有効画素率: {100 * ratio:.1f}% （欠損は NoData = {NODATA:g}）")
+    if nodata_fill == NODATA:
+        log(f"有効画素率: {100 * ratio:.1f}% （欠損は NoData = {NODATA:g}）")
+    else:
+        log(f"有効画素率: {100 * ratio:.1f}% （欠損 {100 * (1 - ratio):.1f}% は {nodata_fill:g} で埋め済み）")
     if ratio < 0.999:
         log("欠損が含まれます。海域・データ未整備地域、または日本国外の可能性があります。", "WARN")
     log(f"保存しました: {output_path} ({size / 1e6:.1f} MB)")
@@ -749,4 +795,5 @@ def run_download(
         "elapsed": elapsed,
         "tile_stats": dict(st),
         "height_mode": height_mode,
+        "nodata_fill": nodata_fill,
     }

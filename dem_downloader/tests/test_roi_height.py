@@ -29,7 +29,21 @@ def test_ellipsoid_raises_geoid_unchanged():
     assert geo[0, 0] == h[0, 0]
 
 
+def test_apply_nodata_fill_zero():
+    h = np.array([[1.0, dem_core.NODATA]], dtype=np.float32)
+    out, tag = dem_core.apply_nodata_fill(h, 0.0)
+    assert tag is None and out[0, 1] == 0.0
+
+
+def test_apply_nodata_fill_keep_sentinel():
+    h = np.array([[dem_core.NODATA]], dtype=np.float32)
+    out, tag = dem_core.apply_nodata_fill(h, dem_core.NODATA)
+    assert tag == dem_core.NODATA and out[0, 0] == dem_core.NODATA
+
+
 if __name__ == "__main__":
     test_roi_from_center_km()
     test_ellipsoid_raises_geoid_unchanged()
+    test_apply_nodata_fill_zero()
+    test_apply_nodata_fill_keep_sentinel()
     print("ok")

@@ -715,6 +715,10 @@ function buildParams() {
     use_reference_grid: !!useRef,
     reference_path: state.ref ? state.ref.path : null,
     height_mode: document.querySelector('input[name="heightMode"]:checked')?.value || "geoid",
+    nodata_fill: (() => {
+      const v = parseFloat($("nodataFill").value);
+      return Number.isFinite(v) ? v : 0;
+    })(),
   };
 }
 
@@ -842,7 +846,7 @@ $("runBtn").onclick = async () => {
   p.output_name = $("outName").value.trim() || "dem.tif";
   p.overwrite = $("overwrite").checked;
   p.export_roi_kml = $("exportRoiKml").checked;
-  store("outDir", p.output_dir); store("outName", p.output_name);
+  store("outDir", p.output_dir); store("outName", p.output_name); store("nodataFill", String(p.nodata_fill));
   $("runBtn").disabled = true;
   try {
     $("log").textContent = "";
@@ -906,6 +910,8 @@ $("shutdownBtn").onclick = async () => {
     }
     $("outDir").value = load("outDir", state.config.default_output_dir);
     $("outName").value = load("outName", "dem.tif");
+    const nf = load("nodataFill", String(state.config.default_nodata_fill ?? 0));
+    if ($("nodataFill")) $("nodataFill").value = nf;
   } catch (e) {
     setInfo($("estimate"), "サーバーとの通信に失敗しました: " + e.message, "error");
   }

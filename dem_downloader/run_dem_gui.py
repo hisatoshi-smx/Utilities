@@ -206,7 +206,7 @@ def _export_roi_kml(job: Job, grid, output_path: str) -> str:
     return kml_path
 
 
-def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_kml: bool, height_mode: str):
+def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_kml: bool, height_mode: str, nodata_fill: float):
     kml_path = None
     try:
         job.log(f"ジョブ開始 (ID: {job.id})")
@@ -219,6 +219,7 @@ def _run_job(job: Job, grid, mode, output_path, workers, use_cache, export_roi_k
             workers=workers,
             use_cache=use_cache,
             height_mode=height_mode,
+            nodata_fill=nodata_fill,
             cancel=job.cancel_event,
             log=job.log,
             progress=job.set_progress,
@@ -271,6 +272,14 @@ def _parse_height_mode(body) -> str:
         raise ApiError(str(e))
 
 
+def _parse_nodata_fill(body) -> float:
+    try:
+        raw = body.get("nodata_fill", 0)
+        return dem_core.parse_nodata_fill(raw)
+    except ValueError as e:
+        raise ApiError(str(e))
+
+
 def _roi_wgs84_from_body(body) -> tuple[float, float, float, float]:
     rc = body.get("roi_center")
     if rc:
@@ -300,6 +309,7 @@ def _parse_grid(body):
     workers = int(body.get("workers", 4) or 4)
     workers = max(1, min(8, workers))
     height_mode = _parse_height_mode(body)
+    nodata_fill = _parse_nodata_fill(body)
 
     if body.get("use_reference_grid"):
         ref = body.get("reference_path")
@@ -316,7 +326,7 @@ def _parse_grid(body):
         if gsd is not None and gsd <= 0:
             raise ApiError("GSD は正の値を指定してください。")
         grid = dem_core.grid_from_roi((west, south, east, north), crs, gsd, mode)
-    return grid, mode, workers, height_mode
+    return grid, mode, workers, height_mode, nodata_fill
 
 
 # ----------------------------------------------------------------------------
@@ -336,6 +346,7 @@ def api_config():
         home=os.path.expanduser("~"),
         sources=[{"id": k, "label": v} for k, v in dem_core.SOURCE_MODE_LABELS.items()],
         height_modes=[{"id": k, "label": v} for k, v in dem_core.HEIGHT_MODE_LABELS.items()],
+        default_nodata_fill=0,
         max_tiles=dem_core.MAX_TILES,
         cache_dir=dem_core.DEFAULT_CACHE_DIR,
     )
@@ -422,7 +433,7 @@ def api_geocode():
 @app.post("/api/estimate")
 def api_estimate():
     body = request.get_json(force=True, silent=True) or {}
-    grid, mode, workers, _height_mode = _parse_grid(body)
+    grid, mode, workers, _height_mode, _nodata_fill = _parse_grid(body)
     est = dem_core.estimate(grid, mode, workers)
     est["crs_name"] = grid.crs.name
     est["is_geographic"] = bool(grid.crs.is_geographic)
@@ -434,7 +445,7 @@ def api_estimate():
 def api_start_job():
     global _current_job_id
     body = request.get_json(force=True, silent=True) or {}
-    grid, mode, workers, height_mode = _parse_grid(body)
+    grid, mode, workers, height_mode, nodata_fill = _parse_grid(body)
 
     out_dir = (body.get("output_dir") or "").strip() or DEFAULT_OUTPUT_DIR
     name = (body.get("output_name") or "").strip() or "dem.tif"
@@ -484,7 +495,17 @@ def api_start_job():
     job.log(f"ログファイル: {log_path}")
     threading.Thread(
         target=_run_job,
-        args=(job, grid, mode, output_path, workers, bool(body.get("use_cache", True)), export_roi_kml, height_mode),
+        args=(
+            job,
+            grid,
+            mode,
+            output_path,
+            workers,
+            bool(body.get("use_cache", True)),
+            export_roi_kml,
+            height_mode,
+            nodata_fill,
+        ),
         daemon=True,
     ).start()
     return jsonify(job.snapshot())
