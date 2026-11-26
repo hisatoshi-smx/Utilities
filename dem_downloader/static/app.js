@@ -654,7 +654,9 @@ async function loadRef() {
     const res = info.res ? ` / 解像度 ${fmtNum(info.res[0])} ${info.unit}` : "";
     const desc = info.kind === "raster"
       ? `ラスタ ${info.width}×${info.height} px, ${info.bands} バンド${res}`
-      : `ベクタ ${info.n_features} 件` + (info.n_displayed < info.n_features ? `（地図には先頭 ${info.n_displayed} 件を表示）` : "");
+      : `ベクタ ${info.n_features} 件`
+          + (info.format ? ` (${info.format.toUpperCase()})` : "")
+          + (info.n_displayed < info.n_features ? `（地図には先頭 ${info.n_displayed} 件を表示）` : "");
     setInfo($("refInfo"), `${desc}\n座標系: ${info.crs_epsg ? "EPSG:" + info.crs_epsg + " " : ""}${info.crs_name}`);
 
     // ROI = ファイルの範囲、座標系 = ファイルの座標系
@@ -715,6 +717,9 @@ function buildParams() {
     use_reference_grid: !!useRef,
     reference_path: state.ref ? state.ref.path : null,
     height_mode: document.querySelector('input[name="heightMode"]:checked')?.value || "geoid",
+    geoid_model: $("geoidModel").value,
+    ellipsoid_model: $("ellipsoidModel").value,
+    geoid_grid_step_deg: parseFloat($("geoidGridStep").value) || 0.01,
     nodata_fill: (() => {
       const v = parseFloat($("nodataFill").value);
       return Number.isFinite(v) ? v : 0;
@@ -765,7 +770,18 @@ async function doEstimate() {
 }
 const scheduleEstimate = debounce(doEstimate, 350);
 ["gsd", "source", "workers"].forEach((id) => $(id).addEventListener("change", scheduleEstimate));
-document.querySelectorAll('input[name="heightMode"]').forEach((el) => el.addEventListener("change", scheduleEstimate));
+function syncEllipsoidUi() {
+  const ell = document.querySelector('input[name="heightMode"]:checked')?.value === "ellipsoid";
+  $("ellipsoidOpts").hidden = !ell;
+  $("geoidModel").disabled = !ell;
+  $("ellipsoidModel").disabled = !ell;
+  $("geoidGridStep").disabled = !ell;
+}
+document.querySelectorAll('input[name="heightMode"]').forEach((el) => {
+  el.addEventListener("change", () => { syncEllipsoidUi(); scheduleEstimate(); });
+});
+["geoidModel", "ellipsoidModel", "geoidGridStep"].forEach((id) => $(id).addEventListener("change", scheduleEstimate));
+$("geoidGridStep").addEventListener("input", scheduleEstimate);
 $("gsd").addEventListener("input", scheduleEstimate);
 
 // ============================================================================
@@ -847,6 +863,8 @@ $("runBtn").onclick = async () => {
   p.overwrite = $("overwrite").checked;
   p.export_roi_kml = $("exportRoiKml").checked;
   store("outDir", p.output_dir); store("outName", p.output_name); store("nodataFill", String(p.nodata_fill));
+  store("geoidModel", p.geoid_model); store("ellipsoidModel", p.ellipsoid_model);
+  store("geoidGridStep", String(p.geoid_grid_step_deg));
   $("runBtn").disabled = true;
   try {
     $("log").textContent = "";
@@ -908,6 +926,26 @@ $("shutdownBtn").onclick = async () => {
       o.value = s.id; o.textContent = s.label;
       $("source").appendChild(o);
     }
+    for (const s of state.config.geoid_models || []) {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = s.label + (s.recommended ? " ★" : "");
+      if (s.id === (state.config.default_geoid_model || "GSIGEO2011")) o.selected = true;
+      $("geoidModel").appendChild(o);
+    }
+    for (const s of state.config.ellipsoid_models || []) {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = s.label + (s.recommended ? " ★" : "");
+      if (s.id === (state.config.default_ellipsoid_model || "wgs84")) o.selected = true;
+      $("ellipsoidModel").appendChild(o);
+    }
+    $("geoidGridStep").value = load("geoidGridStep", String(state.config.default_geoid_grid_step_deg ?? 0.01));
+    const g = load("geoidModel", state.config.default_geoid_model);
+    const e = load("ellipsoidModel", state.config.default_ellipsoid_model);
+    if (g) $("geoidModel").value = g;
+    if (e) $("ellipsoidModel").value = e;
+    syncEllipsoidUi();
     $("outDir").value = load("outDir", state.config.default_output_dir);
     $("outName").value = load("outName", "dem.tif");
     const nf = load("nodataFill", String(state.config.default_nodata_fill ?? 0));

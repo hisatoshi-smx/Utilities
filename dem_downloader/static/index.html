@@ -20,7 +20,7 @@
 
     <section>
       <h2>1. 参照ファイル <span class="opt">任意</span></h2>
-      <p class="hint">GeoTIFF / Shapefile / GeoJSON / GPKG など、地理情報付きファイルの範囲を ROI に使えます。</p>
+      <p class="hint">GeoTIFF、Shapefile (.shp)、KML / KMZ、GeoJSON / GPKG など、地理情報付きファイルの範囲を ROI に使えます（.shp は同フォルダの .shx / .dbf / .prj が必要です）。</p>
       <div class="row">
         <input id="refPath" type="text" placeholder="ファイルパス（/home/... ）" spellcheck="false">
         <button id="refBrowse" type="button">参照…</button>
@@ -89,9 +89,25 @@
       <fieldset class="height-mode">
         <legend>標高の種類</legend>
         <label class="check inline"><input type="radio" name="heightMode" id="heightGeoid" value="geoid" checked> ジオイド高（正常高・GSI タイルそのまま）</label>
-        <label class="check inline"><input type="radio" name="heightMode" id="heightEllipsoid" value="ellipsoid"> 楕円体高（WGS 84 楕円体上）</label>
+        <label class="check inline"><input type="radio" name="heightMode" id="heightEllipsoid" value="ellipsoid"> 楕円体高（H + N で換算）</label>
       </fieldset>
-      <p class="hint">国土地理院タイルはジオイド2011 に基づく正常高です。楕円体高を選ぶとジオイド上の差を加算して保存します。</p>
+      <p class="hint">国土地理院タイルはジオイド2011 に基づく正常高です。楕円体高では InSAR_Dolphin と同様にジオイドモデルと楕円体を選べます。</p>
+      <div id="ellipsoidOpts" class="ellipsoid-opts" hidden>
+        <label class="field">ジオイドモデル (N)
+          <select id="geoidModel"></select>
+        </label>
+        <label class="field">楕円体（出力標高の基準）
+          <select id="ellipsoidModel"></select>
+        </label>
+        <p class="hint">推奨: <strong>GSIGEO2011</strong> + <strong>WGS 84</strong>（現行 GSI タイル・SNAP/isce3 向け）。JPGEO2024 は 2024 標高体系向け。EGM 系は全球モデルです。</p>
+        <details>
+          <summary>楕円体高の詳細（EGM 格子間隔）</summary>
+          <label class="field">EGM ジオイドの内部格子間隔 (度)
+            <input id="geoidGridStep" type="number" step="any" min="0.001" max="0.5" value="0.01">
+          </label>
+          <p class="hint">EGM2008 / EGM96 のみ有効。0.002 でやや高精度。GSIGEO2011 / JPGEO2024 は PROJ 格子 GTiff を DEM 解像度へ直接リサンプルします。</p>
+        </details>
+      </div>
 
       <div class="row two">
         <label class="field">解像度 (GSD)

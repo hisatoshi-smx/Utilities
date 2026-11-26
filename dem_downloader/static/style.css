@@ -51,6 +51,7 @@ button.subtle.map-pick-on { background: #dbeafe; border-color: #3b82f6; color: #
 #map.map-crosshair { cursor: crosshair; }
 .height-mode { border: none; margin: 8px 0 4px; padding: 0; }
 .height-mode legend { font-size: 12.5px; font-weight: 600; color: #374151; padding: 0; margin-bottom: 4px; }
+.ellipsoid-opts { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid #dbeafe; border-radius: 6px; background: #f8fafc; }
 .with-unit { display: flex; align-items: center; gap: 6px; }
 .with-unit span { min-width: 1.5em; color: #6b7280; }
 details { margin-top: 8px; }

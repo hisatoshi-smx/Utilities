@@ -35,7 +35,7 @@ from typing import Callable, Optional
 import numpy as np
 import rasterio
 import requests
-from pyproj import CRS, Transformer
+from pyproj import CRS
 from rasterio.transform import Affine, array_bounds, from_origin
 from rasterio.warp import Resampling, calculate_default_transform, reproject, transform as warp_transform, transform_bounds
 from rasterio.windows import Window
@@ -95,11 +95,8 @@ SOURCE_MODE_LABELS = {
 # 国土地理院タイルの標高はジオイド2011 に基づく正常高（ジオイド高）。
 HEIGHT_MODE_LABELS = {
     "geoid": "ジオイド高（標高・正常高／GSI タイルそのまま）",
-    "ellipsoid": "楕円体高（WGS 84 楕円体上の高さへ変換）",
+    "ellipsoid": "楕円体高（ジオイドモデルに基づき H+N で換算）",
 }
-_ORTHO_COMPOUND = CRS.from_epsg(6697)  # JGD2024 + JGD2011 (vertical) height
-_ELLIPSOID_3D = CRS.from_epsg(4327)  # WGS 84 geographic 3D
-_ORTHO_TO_ELLIP = Transformer.from_crs(_ORTHO_COMPOUND, _ELLIPSOID_3D, always_xy=True)
 
 DEFAULT_CACHE_DIR = os.environ.get(
     "DEM_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "dem_downloader", "tiles")
@@ -616,24 +613,27 @@ def apply_height_mode(
     band_transform: Affine,
     dst_crs: CRS,
     height_mode: str,
+    *,
+    geoid_model: str = "GSIGEO2011",
+    ellipsoid_model: str = "wgs84",
+    cache_dir: Optional[str] = None,
+    geoid_grid_step_deg: float = 0.01,
 ) -> np.ndarray:
-    """国土地理院のジオイド高を、必要に応じて楕円体高 (WGS 84) へ変換する。"""
+    """国土地理院のジオイド高を、必要に応じて楕円体高へ変換する。"""
     if height_mode == "geoid":
         return heights
-    rows, cols = np.indices(heights.shape)
-    xs, ys = rasterio.transform.xy(band_transform, rows.ravel(), cols.ravel(), offset="center")
-    lon, lat = warp_transform(dst_crs, "EPSG:6668", xs, ys)
-    flat = heights.ravel()
-    valid = flat != NODATA
-    if not np.any(valid):
-        return heights
-    lon_v = np.asarray(lon, dtype=np.float64)[valid]
-    lat_v = np.asarray(lat, dtype=np.float64)[valid]
-    h_v = flat[valid].astype(np.float64, copy=False)
-    _, _, h_ell = _ORTHO_TO_ELLIP.transform(lon_v, lat_v, h_v)
-    out = flat.copy()
-    out[valid] = h_ell.astype(np.float32)
-    return out.reshape(heights.shape)
+    import geoid_vert
+
+    cache_dir = cache_dir or DEFAULT_CACHE_DIR
+    return geoid_vert.orthometric_to_ellipsoidal(
+        heights,
+        band_transform,
+        dst_crs,
+        geoid=geoid_model,
+        ellipsoid=ellipsoid_model,
+        cache_dir=cache_dir,
+        geoid_grid_step_deg=geoid_grid_step_deg,
+    )
 
 
 def run_download(
@@ -646,13 +646,21 @@ def run_download(
     cache_dir: Optional[str] = None,
     delay: float = 0.05,
     height_mode: str = "geoid",
+    geoid_model: str = "GSIGEO2011",
+    ellipsoid_model: str = "wgs84",
+    geoid_grid_step_deg: float = 0.01,
     nodata_fill: float = 0.0,
     cancel: Optional[threading.Event] = None,
     log: Callable = lambda msg, level="INFO": print(f"[{level}] {msg}"),
     progress: Callable = lambda fraction, stage, eta: None,
 ) -> dict:
     """DEM をダウンロードして output_path に GeoTIFF を書き出す。結果の概要を dict で返す。"""
+    import geoid_vert
+
     height_mode = parse_height_mode(height_mode)
+    geoid_model = geoid_vert.parse_geoid_model(geoid_model)
+    ellipsoid_model = geoid_vert.parse_ellipsoid_model(ellipsoid_model)
+    geoid_grid_step_deg = geoid_vert.parse_geoid_grid_step(geoid_grid_step_deg)
     nodata_fill = parse_nodata_fill(nodata_fill)
     cancel = cancel or threading.Event()
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
@@ -673,6 +681,13 @@ def run_download(
     )
     log(f"DEM ソース: {SOURCE_MODE_LABELS[mode]}")
     log(f"標高の種類: {HEIGHT_MODE_LABELS[height_mode]}")
+    if height_mode == "ellipsoid":
+        log(
+            f"楕円体高: ジオイド={geoid_vert.GEOID_MODEL_LABELS[geoid_model].split('—')[0].strip()} "
+            f"/ 楕円体={geoid_vert.ELLIPSOID_MODEL_LABELS[ellipsoid_model].split('—')[0].strip()}"
+        )
+        if geoid_model in ("EGM2008", "EGM96"):
+            log(f"EGM ジオイドの内部格子間隔: {geoid_grid_step_deg} 度")
     if nodata_fill == NODATA:
         log(f"欠損画素: NoData ({NODATA:g}) のまま出力します")
     else:
@@ -735,8 +750,10 @@ def run_download(
                 VERTICAL_REFERENCE=(
                     "JGD2011 geoid height (orthometric)"
                     if height_mode == "geoid"
-                    else "WGS 84 ellipsoidal height"
+                    else geoid_vert.vertical_reference_tag(geoid_model, ellipsoid_model)
                 ),
+                GEOID_MODEL=geoid_model if height_mode == "ellipsoid" else "GSIGEO2011 (source)",
+                ELLIPSOID_MODEL=ellipsoid_model if height_mode == "ellipsoid" else "",
                 NODATA_FILL=str(nodata_fill),
             )
             for b in range(n_bands):
@@ -753,7 +770,16 @@ def run_download(
                     if hole.any():
                         fill = _warp_band(extra, shape, band_tf, grid.crs)
                         out[hole] = fill[hole]
-                out = apply_height_mode(out, band_tf, grid.crs, height_mode)
+                out = apply_height_mode(
+                    out,
+                    band_tf,
+                    grid.crs,
+                    height_mode,
+                    geoid_model=geoid_model,
+                    ellipsoid_model=ellipsoid_model,
+                    cache_dir=cache_dir,
+                    geoid_grid_step_deg=geoid_grid_step_deg,
+                )
                 valid_total += int((out != NODATA).sum())
                 out, _ = apply_nodata_fill(out, nodata_fill)
                 dst.write(out, 1, window=Window(0, row0, grid.width, rows))
@@ -795,5 +821,7 @@ def run_download(
         "elapsed": elapsed,
         "tile_stats": dict(st),
         "height_mode": height_mode,
+        "geoid_model": geoid_model,
+        "ellipsoid_model": ellipsoid_model,
         "nodata_fill": nodata_fill,
     }

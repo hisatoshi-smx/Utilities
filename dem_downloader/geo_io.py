@@ -12,7 +12,9 @@ from __future__ import annotations
 import math
 import os
 import threading
+import xml.etree.ElementTree as ET
 import xml.sax.saxutils as xml_escape
+import zipfile
 
 import fiona
 import rasterio
@@ -24,7 +26,7 @@ from shapely.geometry import mapping, shape
 from shapely.ops import transform as shp_transform
 
 RASTER_EXTS = {".tif", ".tiff", ".vrt", ".img", ".jp2", ".nc", ".asc"}
-VECTOR_EXTS = {".shp", ".geojson", ".json", ".gpkg", ".kml", ".gml", ".fgb"}
+VECTOR_EXTS = {".shp", ".geojson", ".json", ".gpkg", ".kml", ".kmz", ".gml", ".fgb"}
 GEO_EXTS = RASTER_EXTS | VECTOR_EXTS
 
 MAX_DISPLAY_FEATURES = 5000
@@ -270,6 +272,176 @@ def _inspect_raster(path: str) -> dict:
         }
 
 
+def _inspect_shapefile(path: str) -> dict:
+    """ESRI Shapefile（.shp + 付随ファイル）を検査する。"""
+    base, _ = os.path.splitext(path)
+    missing = [s for s in (".shx", ".dbf") if not os.path.isfile(base + s)]
+    if missing:
+        raise FileProblem(
+            "Shapefile に必要な付随ファイルがありません: "
+            + ", ".join(base + s for s in missing)
+            + "（同じフォルダに .shp / .shx / .dbf / .prj があるか確認してください）。"
+        )
+    return _inspect_vector(path)
+
+
+def _kml_local_tag(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _parse_kml_coords_text(text: str) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = []
+    for token in (text or "").replace("\n", " ").split():
+        parts = token.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        if math.isfinite(lon) and math.isfinite(lat):
+            pts.append((lon, lat))
+    return pts
+
+
+def _read_kml_root(path: str) -> ET.Element:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".kmz":
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = [
+                    n
+                    for n in zf.namelist()
+                    if n.lower().endswith(".kml") and not n.split("/")[-1].startswith(".")
+                ]
+                if not names:
+                    raise FileProblem("KMZ 内に KML ファイルがありません。")
+                names.sort(key=lambda n: (0 if os.path.basename(n).lower() == "doc.kml" else 1, n))
+                data = zf.read(names[0])
+        except zipfile.BadZipFile as e:
+            raise FileProblem(f"KMZ を ZIP として開けません: {e}") from e
+    else:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            raise FileProblem(f"KML を読めません: {e}") from e
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError as e:
+        raise FileProblem(f"KML の XML が不正です: {e}") from e
+
+
+def _kml_latlon_boxes(root: ET.Element) -> list[tuple[float, float, float, float]]:
+    boxes: list[tuple[float, float, float, float]] = []
+    for elem in root.iter():
+        if _kml_local_tag(elem.tag) != "LatLonBox":
+            continue
+        vals = {}
+        for child in elem:
+            name = _kml_local_tag(child.tag)
+            if name in ("north", "south", "east", "west") and child.text:
+                try:
+                    vals[name] = float(child.text.strip())
+                except ValueError:
+                    pass
+        if len(vals) == 4:
+            west, east = vals["west"], vals["east"]
+            south, north = vals["south"], vals["north"]
+            if west < east and south < north:
+                boxes.append((west, south, east, north))
+    return boxes
+
+
+def _inspect_kml(path: str) -> dict:
+    """KML / KMZ を WGS84 の範囲・GeoJSON として返す（座標は KML 2.2 の lon,lat を想定）。"""
+    root = _read_kml_root(path)
+    lonlats: list[tuple[float, float]] = []
+    features = []
+    n_features = 0
+
+    for elem in root.iter():
+        tag = _kml_local_tag(elem.tag)
+        if tag == "Placemark":
+            n_features += 1
+        if tag == "coordinates" and elem.text:
+            pts = _parse_kml_coords_text(elem.text)
+            if not pts:
+                continue
+            lonlats.extend(pts)
+            if len(pts) >= 2:
+                ring = pts if pts[0] == pts[-1] else pts
+                if len(ring) >= 3:
+                    if ring[0] != ring[-1]:
+                        ring = ring + [ring[0]]
+                    geom = {"type": "Polygon", "coordinates": [ring]}
+                else:
+                    geom = {"type": "LineString", "coordinates": pts}
+                features.append({"type": "Feature", "properties": {}, "geometry": geom})
+
+    for west, south, east, north in _kml_latlon_boxes(root):
+        lonlats.extend([(west, south), (east, north)])
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+                },
+            }
+        )
+
+    if not lonlats:
+        raise FileProblem("KML / KMZ に利用できる座標がありません。")
+
+    west = min(p[0] for p in lonlats)
+    east = max(p[0] for p in lonlats)
+    south = min(p[1] for p in lonlats)
+    north = max(p[1] for p in lonlats)
+    if west >= east:
+        pad = max(1e-5, 0.0001)
+        west, east = west - pad, east + pad
+    if south >= north:
+        pad = max(1e-5, 0.0001)
+        south, north = south - pad, north + pad
+    west = max(-180.0, west)
+    east = min(180.0, east)
+    south = max(-90.0, south)
+    north = min(90.0, north)
+    if west >= east or south >= north:
+        raise FileProblem("KML の座標範囲が不正です。")
+
+    if not features:
+        features = [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[west, south], [east, south], [east, north], [west, north], [west, south]]
+                    ],
+                },
+            }
+        ]
+
+    if n_features == 0:
+        n_features = len(features)
+
+    crs = CRS.from_epsg(4326)
+    return {
+        "kind": "vector",
+        "path": path,
+        "n_features": n_features,
+        "n_displayed": min(len(features), MAX_DISPLAY_FEATURES),
+        "bounds_wgs84": [west, south, east, north],
+        "geojson": {"type": "FeatureCollection", "features": features[:MAX_DISPLAY_FEATURES]},
+        "format": "kml" if path.lower().endswith(".kml") else "kmz",
+        **_crs_summary(crs),
+    }
+
+
 def _inspect_vector(path: str) -> dict:
     with fiona.open(path) as src:
         if not src.crs_wkt:
@@ -477,6 +649,10 @@ def inspect_file(path: str) -> dict:
     if not os.path.isfile(path):
         raise ValueError(f"ファイルが見つかりません: {path}")
     ext = os.path.splitext(path)[1].lower()
+    if ext == ".shp":
+        return _inspect_shapefile(path)
+    if ext in (".kml", ".kmz"):
+        return _inspect_kml(path)
     order = [_inspect_raster, _inspect_vector] if ext in RASTER_EXTS else [_inspect_vector, _inspect_raster]
     errors = []
     for fn in order:

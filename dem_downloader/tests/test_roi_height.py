@@ -21,9 +21,14 @@ def test_roi_from_center_km():
 
 
 def test_ellipsoid_raises_geoid_unchanged():
+    import tempfile
+
     h = np.array([[32.0]], dtype=np.float32)
     tf = from_origin(140.08, 36.1, 0.0001, 0.0001)
-    ell = dem_core.apply_height_mode(h, tf, CRS.from_epsg(4326), "ellipsoid")
+    cache = tempfile.mkdtemp()
+    ell = dem_core.apply_height_mode(
+        h, tf, CRS.from_epsg(4326), "ellipsoid", cache_dir=cache, geoid_model="GSIGEO2011"
+    )
     assert ell[0, 0] > h[0, 0] + 30
     geo = dem_core.apply_height_mode(h, tf, CRS.from_epsg(4326), "geoid")
     assert geo[0, 0] == h[0, 0]
