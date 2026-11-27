@@ -77,7 +77,7 @@ class ExplorerConfig(_Base):
     created: str = ""
     input_h5: str = ""
     frequency: Literal["A", "B"] = "A"
-    polarization: str = "HH"
+    polarization: Literal["HH", "HV", "HH_HV"] = "HH"
     roi: RoiConfig = Field(default_factory=RoiConfig)
     grid: GridConfig = Field(default_factory=GridConfig)
     geocode: GeocodeConfig = Field(default_factory=GeocodeConfig)
@@ -109,6 +109,8 @@ def check_runnable(cfg: ExplorerConfig) -> tuple[list[str], list[str]]:
         err.append(f"入力ファイルがありません: {cfg.input_h5}")
     if not cfg.roi.is_set():
         err.append("ROI を地図または数値で指定してください")
+    if cfg.polarization not in ("HH", "HV", "HH_HV"):
+        err.append("偏波は HH / HV / HH_HV から選択してください")
     if cfg.dem.source == "file" and not (cfg.dem.path or "").strip():
         err.append("DEM ソースがファイルのとき、DEM パスを指定してください")
     elif cfg.dem.source == "file" and not os.path.isfile(cfg.dem.path):

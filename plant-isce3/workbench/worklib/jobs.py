@@ -44,9 +44,10 @@ def start(project: Project, tool: str) -> dict:
     cmd = [sys.executable, "-u", "-m", "worklib.worker", "--project", project.name,
            "--projects-dir", os.path.dirname(project.root), "--tool", tool]
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": APP_DIR}
-    f = open(log_path, "w", encoding="utf-8")
+    f = open(log_path, "w", encoding="utf-8", buffering=1)
     proc = subprocess.Popen(cmd, cwd=APP_DIR, stdout=f, stderr=subprocess.STDOUT, env=env,
                             start_new_session=True)
+    # 子プロセスが fd を継承している間は親が閉じてよい（POSIX）
     f.close()
     job = {"status": "running", "tool": tool, "pid": proc.pid, "log": log_name, "started": ts,
            "returncode": None}

@@ -1,5 +1,8 @@
 /* Plant-ISCE3 エクスプローラ — Vanilla JS */
 const $ = (id) => document.getElementById(id);
+const LAST_PROJECT_KEY = "plant_isce3_explorer_last_project";
+/** 東京駅周辺（新規プロジェクトの初期 ROI） */
+const TOKYO_ROI = { west: 139.748, south: 35.655, east: 139.772, north: 35.675 };
 const state = {
   project: null, config: null, tab: "common", schemas: {}, running: false, logOffset: 0,
   fsTarget: null, map: null, roiMode: null, roiLayer: null, footprintLayer: null,
@@ -30,11 +33,20 @@ function appendLog(text) {
   if (meta) meta.textContent = `約 ${n.toLocaleString()} 行（古い行は自動で省略）`;
 }
 
-function clearLogView() {
+async function clearLogView() {
   $("logBox").textContent = "";
   const meta = $("logMeta");
   if (meta) meta.textContent = "";
-  state.logOffset = 0;
+  if (state.project) {
+    try {
+      const L = await api(`/api/projects/${encodeURIComponent(state.project)}/log?offset=0`);
+      state.logOffset = L.offset;
+    } catch (_) {
+      state.logOffset = 0;
+    }
+  } else {
+    state.logOffset = 0;
+  }
 }
 
 function showBanner(text, kind = "warn") {
@@ -126,7 +138,7 @@ function finishDrag(e) {
 
 function initMap() {
   if (state.map) return;
-  state.map = L.map("map", { preferCanvas: true }).setView([35, 135], 5);
+  state.map = L.map("map", { preferCanvas: true }).setView([35.67, 139.76], 14);
   L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png", { attribution: "GSI", maxZoom: 18 }).addTo(state.map);
   state.roiLayer = L.layerGroup().addTo(state.map);
   state.footprintLayer = L.layerGroup().addTo(state.map);
@@ -142,17 +154,33 @@ function initMap() {
   });
   state.map.on("mouseup", finishDrag);
   setTimeout(() => state.map.invalidateSize(), 100);
-  writeRoiInputs({ west: 130, south: 32, east: 131, north: 33 });
+  writeRoiInputs(TOKYO_ROI);
   drawRoiRect(true);
 }
 
+const CONFIG_SEND_STRIP = new Set([
+  "check",
+  "polarizations_available",
+  "suggested_outputs",
+  "spacing",
+  "footprint",
+  "bounds",
+  "path",
+  "platform",
+  "datetime",
+  "track",
+  "frame",
+  "direction",
+  "frequencies",
+]);
+
 function readConfig() {
   const c = structuredClone(state.config) || {};
-  delete c.check;
+  for (const k of CONFIG_SEND_STRIP) delete c[k];
   c.description = $("description").value;
   c.input_h5 = $("inputH5").value.trim();
   c.frequency = $("frequency").value;
-  c.polarization = $("polarization").value.trim();
+  c.polarization = $("polarization").value;
   c.roi = { west: +$("roiWest").value, south: +$("roiSouth").value, east: +$("roiEast").value, north: +$("roiNorth").value };
   const gs = $("gridSpacing").value.trim();
   c.grid = {
@@ -184,10 +212,14 @@ function fillForm(payload) {
   $("description").value = cfg.description || "";
   $("inputH5").value = cfg.input_h5 || "";
   $("frequency").value = cfg.frequency || "A";
-  $("polarization").value = cfg.polarization || "HH";
+  const pol = cfg.polarization || "HH";
+  $("polarization").value = ["HH", "HV", "HH_HV"].includes(pol) ? pol : "HH";
+  updatePolarizationHint(cfg);
   const r = cfg.roi || {};
   if (r.west != null) setRoi(r, { fit: false });
-  else drawRoiRect(false);
+  else {
+    setRoi(TOKYO_ROI, { fit: true });
+  }
   $("demSource").value = cfg.dem?.source || "gsi";
   $("demPath").value = cfg.dem?.path || "";
   $("gsiMode").value = cfg.dem?.gsi_mode || "auto";
@@ -198,6 +230,21 @@ function fillForm(payload) {
   updateGridSpacingHint(cfg, payload.runtime);
   toggleDemRows();
   $("checkMsg").textContent = chk.errors?.length ? chk.errors.join(" / ") : chk.warnings?.join(" / ") || "";
+}
+
+function updatePolarizationHint(cfg, available) {
+  const h = $("polarizationHint");
+  if (!h) return;
+  const av = available || state.inspectMeta?.polarizations_available;
+  const sel = $("polarization").value;
+  let text =
+    sel === "HH_HV"
+      ? "RTC 付き geocode は 1 ファイル・2 バンド（HH, HV）。複素 GSLC は _HH.tif / _HV.tif に分割保存。"
+      : sel === "HV"
+        ? "HV のみを処理します（入力に HV が必要）。"
+        : "HH のみを処理します（1 バンド）。"
+  if (av?.length) text += ` 利用可能: ${av.join(", ")}`;
+  h.textContent = text;
 }
 
 function updateGridSpacingHint(cfg, runtime) {
@@ -283,6 +330,7 @@ function collectToolArgs(tool) {
 
 async function refreshProjects() {
   const { projects } = await api("/api/projects");
+  state.projectList = projects;
   const sel = $("projectSelect");
   sel.innerHTML = "";
   projects.forEach((p) => {
@@ -297,6 +345,7 @@ async function refreshProjects() {
 async function loadProject(name) {
   const p = await api("/api/projects/" + encodeURIComponent(name));
   state.project = name;
+  try { localStorage.setItem(LAST_PROJECT_KEY, name); } catch (_) {}
   state.config = p.config;
   state.config.check = p.check;
   state.running = p.running;
@@ -310,7 +359,7 @@ async function loadProject(name) {
     const L = await api(`/api/projects/${encodeURIComponent(name)}/log?offset=0`);
     if (L.text) { appendLog(L.text); state.logOffset = L.offset; }
   } catch (_) {}
-  pollLog();
+  scheduleLogPoll();
 }
 
 async function saveConfig() {
@@ -335,19 +384,28 @@ async function runTool() {
   await api("/api/projects/" + encodeURIComponent(state.project) + "/run", "POST", { tool });
   state.running = true;
   clearLogView();
+  scheduleLogPoll();
   pollLog();
+}
+
+function scheduleLogPoll() {
+  if (state._logTimer) clearInterval(state._logTimer);
+  const ms = state.running ? 400 : 1500;
+  state._logTimer = setInterval(pollLog, ms);
 }
 
 async function pollLog() {
   if (!state.project) return;
+  const wasRunning = state.running;
   try {
     const L = await api(`/api/projects/${encodeURIComponent(state.project)}/log?offset=${state.logOffset}`);
     if (L.text) { appendLog(L.text); state.logOffset = L.offset; }
     const p = await api("/api/projects/" + encodeURIComponent(state.project));
     state.running = p.running;
+    if (wasRunning !== state.running) scheduleLogPoll();
   } catch (_) {}
 }
-state._poll = setInterval(pollLog, 1500);
+scheduleLogPoll();
 
 $("mainTabs").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-tab]");
@@ -386,8 +444,10 @@ $("btnNewProject").onclick = async () => {
   await refreshProjects();
   $("projectSelect").value = name.trim();
   await loadProject(name.trim());
+  if (!state.config?.roi?.west) setRoi(TOKYO_ROI, { fit: true });
   showBanner(`プロジェクト「${name.trim()}」を作成しました。NISAR ファイルと ROI を設定して「保存」してください。`, "info");
 };
+$("polarization")?.addEventListener("change", () => updatePolarizationHint(state.config));
 $("geocodeOutput")?.addEventListener("change", () => {
   if (state.tab === "geocode") {
     $("toolHint").textContent = $("geocodeOutput").value === "rtc_gamma"
@@ -395,7 +455,7 @@ $("geocodeOutput")?.addEventListener("change", () => {
       : "isce3.geocode_slc で複素 GSLC を地図投影します（距離位相フラットニングあり、放射地形補正なし）。";
   }
 });
-$("btnLogClear").onclick = () => clearLogView();
+$("btnLogClear").onclick = () => { clearLogView(); };
 $("btnSave").onclick = () => saveConfig();
 $("btnInspect").onclick = async () => {
   if (!requireProject()) return;
@@ -420,6 +480,17 @@ $("btnInspect").onclick = async () => {
       const s = prod.spacing;
       $("gridSpacingHint").textContent =
         `推奨（自動）: ${s.recommended_m} m（地上方位 ${s.azimuth_m} m、地上距離 ${s.ground_range_m} m、周波数 ${s.frequency || ""}）`;
+    }
+    if (prod.polarizations_available?.length) {
+      state.inspectMeta = { polarizations_available: prod.polarizations_available };
+      updatePolarizationHint(state.config, prod.polarizations_available);
+    }
+    const sug = r.suggested_outputs || prod.suggested_outputs;
+    if (sug) {
+      if (!$("outputGeocode").value.trim() && sug.geocode) $("outputGeocode").value = sug.geocode;
+      if (!$("outputRtc").value.trim() && sug.rtc) $("outputRtc").value = sug.rtc;
+      $("outputNameHint").textContent =
+        `推奨ファイル名を入力欄に入れました（変更したら「設定を保存」）。例: ${sug.geocode}`;
     }
     if (prod.frequencies?.length && !$("frequency").dataset.userPicked) {
       const f0 = prod.frequencies[0];
@@ -523,8 +594,16 @@ $("dlgBrowse").addEventListener("click", (e) => { if (e.target === $("dlgBrowse"
   try {
     await loadSchemas();
     await refreshProjects();
-    if ($("projectSelect").options.length) {
-      await loadProject($("projectSelect").value);
+    const projects = state.projectList || [];
+    if (projects.length) {
+      let name = null;
+      try { name = localStorage.getItem(LAST_PROJECT_KEY); } catch (_) {}
+      if (!name || !projects.some((p) => p.name === name)) {
+        const sorted = [...projects].sort((a, b) => (b.modified || "").localeCompare(a.modified || ""));
+        name = sorted[0]?.name;
+      }
+      $("projectSelect").value = name;
+      await loadProject(name);
     } else {
       showBanner("まず「＋ 新しいプロジェクトを作成」を押してください。プロジェクトは設定・ログ・出力の保存先です。");
     }

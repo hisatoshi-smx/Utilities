@@ -21,6 +21,10 @@ def main() -> int:
     from .pipeline import run_project_tool
     from .projects import Project
 
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, OSError):
+        pass
     proj = Project(args.project, args.projects_dir)
     try:
         rc = run_project_tool(proj, args.tool)

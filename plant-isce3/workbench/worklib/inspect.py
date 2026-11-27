@@ -58,7 +58,27 @@ def inspect_nisar(h5_path: str, frequency: str = "A") -> dict:
     freqs = []
     if ident.listOfFrequencies is not None:
         freqs = [_bytes_str(f) for f in ident.listOfFrequencies]
+    pols_available: list[str] = []
+    try:
+        import h5py
+
+        freq_key = frequency if frequency in (freqs or [frequency]) else (freqs[0] if freqs else frequency)
+        with h5py.File(h5_path, "r") as h5:
+            for root in ("science/LSAR", "science/SSAR"):
+                key = f"{root}/RSLC/swaths/frequency{freq_key}/listOfPolarizations"
+                if key in h5:
+                    pols_available = [
+                        _bytes_str(p) for p in h5[key][()]
+                    ]
+                    break
+    except OSError:
+        pass
     track = _track_number(ident, h5_path)
+    frame = getattr(ident, "frameNumber", None)
+    try:
+        frame = int(frame) if frame is not None else None
+    except (TypeError, ValueError):
+        frame = None
     spacing = {}
     try:
         from .nisar_grid import nominal_ground_spacing_m
@@ -78,8 +98,10 @@ def inspect_nisar(h5_path: str, frequency: str = "A") -> dict:
         "platform": _bytes_str(getattr(ident, "missionId", None)) or "NISAR",
         "datetime": _format_zd_time(ident),
         "track": track,
+        "frame": frame,
         "direction": _bytes_str(ident.orbitPassDirection),
         "frequencies": freqs,
+        "polarizations_available": pols_available,
         "footprint": ring,
         "bounds": [bounds[0], bounds[1], bounds[2], bounds[3]],
         "spacing": spacing,

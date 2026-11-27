@@ -81,6 +81,12 @@ def run_process_logging(
                 complete, pending = split_log_buffer(pending)
                 for line in complete:
                     emit_log_line(log, line, max_line)
+                    try:
+                        import sys
+
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
             elif proc.poll() is not None:
                 break
         if pending.strip():

@@ -15,6 +15,7 @@ from . import __version__, jobs
 from .catalog import TOOLS, all_tools, tool_schema
 from .config import ExplorerConfig, check_runnable
 from .inspect import inspect_nisar
+from .output_names import suggest_output_basenames
 from .projects import APP_DIR, PROJECTS_DIR, Project, ProjectError, create_project, delete_project, list_projects
 
 STATIC_DIR = os.path.join(APP_DIR, "static")
@@ -162,6 +163,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError("実行中は保存できません", 409)
                 data = body.get("config") or {}
                 data.pop("check", None)
+                for _k in (
+                    "polarizations_available",
+                    "suggested_outputs",
+                    "spacing",
+                    "footprint",
+                    "bounds",
+                    "path",
+                    "platform",
+                    "datetime",
+                    "track",
+                    "frame",
+                    "direction",
+                    "frequencies",
+                ):
+                    data.pop(_k, None)
                 data["name"] = proj.name
                 old = proj.load()
                 data.setdefault("created", old.created)
@@ -176,8 +192,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not cfg.input_h5 or not os.path.isfile(cfg.input_h5):
                     raise ApiError("入力 HDF5 を指定して保存してください")
                 info = inspect_nisar(cfg.input_h5, cfg.frequency)
+                info["suggested_outputs"] = suggest_output_basenames(
+                    info,
+                    frequency=cfg.frequency,
+                    polarization=cfg.polarization,
+                    geocode_mode=cfg.geocode.output,
+                )
                 proj.write_json(info, "work", "product.json")
-                self._json(200, {"product": info, "project": _payload(proj)})
+                self._json(200, {"product": info, "suggested_outputs": info["suggested_outputs"], "project": _payload(proj)})
                 return
             m = re.match(r"^/api/projects/([^/]+)/run$", path)
             if m:

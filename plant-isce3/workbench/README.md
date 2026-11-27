@@ -46,7 +46,7 @@ python -m pytest -q tests
 ## グリッド・出力
 
 - **グリッド間隔 (m)** を空欄にすると、NISAR RSLC のスワス中央における **地上方位・地上距離ピクセル間隔の細い方** を自動使用します（`isce3.product.get_radar_grid_nominal_ground_spacing`）。
-- **出力ファイル名**（geocode / rtc）を指定すると `projects/<名>/output/` にその名前で保存します（空欄は従来の既定名）。パス区切りは不可です。
+- **出力ファイル名**（geocode / rtc）を指定すると `projects/<名>/output/` にその名前で保存します。**NISAR を読み込む**で `衛星_軌道_フレーム_周波数_偏波_観測日_…` 形式の推奨名が自動入力されます（空欄のときは `work/product.json` の推奨名を使用）。パス区切りは不可です。
 
 ## geocode（NISAR）
 
@@ -58,6 +58,26 @@ geocode タブの **「ジオコードの種類」** で選べます。
 | **複素 GSLC** | `isce3.geocode_slc`（位相保持・InSAR 向け、RTC なし） |
 
 RTC 付きは geocode タブの plant オプション（`--output-terrain-radiometry` 等）で上書き可能です。
+
+## 偏波・出力バンド名（QGIS）
+
+共通タブの **偏波** は **HH / HV / HH+HV**（`HH_HV`）から選べます。ジオコード種類に応じて次のように処理・保存します。
+
+| 偏波 | RTC 付き geocode | 複素 GSLC | rtc タブ |
+|------|------------------|-----------|----------|
+| HH | 1 ファイル・1 バンド | `_HH.tif` | 1 バンドに `HH_gamma0` |
+| HV | 1 ファイル・1 バンド | `_HV.tif` | 1 バンドに `HV_gamma0` |
+| HH+HV | 1 ファイル・2 バンド（HH→HV） | `_HH.tif` / `_HV.tif` | 選択数ぶん HH→HV で Description 付与 |
+
+geocode（RTC 付き）と **rtc タブ**の実行が成功したあと、GeoTIFF の各バンドに GDAL の **Description** を書き込みます（例: `HH_gamma0`, `HV_gamma0`）。複素 GSLC は `HH_cpx` / `HV_cpx` です。QGIS でレイヤを開き直すとバンド名が反映されます。
+
+`plant_isce3_rtc` は偏波リスト引数を持たないため、製品によってはバンド数が選択と一致しないことがあります。その場合は **選択した偏波の数だけ**、1 バンド目から順にラベルを付けます（余分なバンドは未設定のままです）。
+
+## GUI のその他
+
+- 起動時に **最後に開いたプロジェクト** を復元します（`localStorage`）。
+- 新規プロジェクトの初期 ROI は **東京駅周辺** です。
+- **NISAR を読み込む** でメタデータ・フットプリント・推奨グリッド間隔・推奨出力名を反映します。
 
 ## 今後の拡張
 

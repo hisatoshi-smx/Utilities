@@ -6,6 +6,7 @@ import os
 import re
 
 from .config import ExplorerConfig
+from .output_names import suggest_output_basenames
 from .projects import Project
 
 _NAME_RE = re.compile(r"^[^\0/\\]+$")
@@ -30,8 +31,18 @@ def safe_basename(name: str, default: str) -> str:
 
 def output_path(proj: Project, tool: str, cfg: ExplorerConfig) -> str:
     default = _DEFAULTS.get(tool, f"{tool}_out.tif")
-    custom = ""
-    if cfg.outputs:
-        custom = getattr(cfg.outputs, tool, "") or ""
-    name = safe_basename(custom, default)
+    custom = (getattr(cfg.outputs, tool, "") or "").strip() if cfg.outputs else ""
+    if custom:
+        name = safe_basename(custom, default)
+    else:
+        prod = proj.read_json("work", "product.json") or {}
+        sug = (prod.get("suggested_outputs") or {}).get(tool)
+        if not sug and prod.get("path"):
+            sug = suggest_output_basenames(
+                prod,
+                frequency=cfg.frequency,
+                polarization=cfg.polarization,
+                geocode_mode=cfg.geocode.output,
+            ).get(tool)
+        name = safe_basename(sug or "", default)
     return proj.path("output", name)
