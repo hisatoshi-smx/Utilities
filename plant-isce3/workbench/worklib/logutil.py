@@ -1,4 +1,4 @@
-"""ログ行の整形（長行の折り返し・\\r 進捗の改行化）。"""
+"""ログ行の整形（長行の折り返し・\\r 進捗は同一行の上書き）。"""
 
 from __future__ import annotations
 
@@ -9,19 +9,33 @@ from typing import Callable
 DEFAULT_MAX_LINE = 200
 
 
+def collapse_cr_line(line: str) -> str:
+    """行内の \\r は直前の文字列を破棄し、最後の断片のみ残す（ターミナル進捗）。"""
+    i = line.rfind("\r")
+    return line[i + 1 :] if i >= 0 else line
+
+
 def split_log_buffer(pending: str) -> tuple[list[str], str]:
-    """\\n / \\r で行に分割し、未完了断片を返す。"""
+    """\\n で行に分割。裸の \\r は行頭へ戻る（未完了断片に残す）。"""
     lines: list[str] = []
     start = 0
     i = 0
     while i < len(pending):
-        if pending[i] in "\r\n":
+        if pending[i : i + 2] == "\r\n":
             if i > start:
                 lines.append(pending[start:i])
-            if pending[i] == "\r" and i + 1 < len(pending) and pending[i + 1] == "\n":
-                i += 1
+            start = i + 2
+            i += 2
+        elif pending[i] == "\n":
+            if i > start:
+                lines.append(pending[start:i])
             start = i + 1
-        i += 1
+            i += 1
+        elif pending[i] == "\r":
+            start = i + 1
+            i += 1
+        else:
+            i += 1
     return lines, pending[start:]
 
 
@@ -45,12 +59,19 @@ def emit_log_line(log: Callable[..., None], line: str, max_len: int = DEFAULT_MA
 
 
 def sanitize_log_text(text: str, max_len: int = DEFAULT_MAX_LINE) -> str:
-    """保存済み・一括キャプチャのログを画面向けに整形。"""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    """保存済み・一括キャプチャのログを画面向けに整形（\\r 進捗は 1 行に畳む）。"""
+    text = text.replace("\r\n", "\n")
     parts: list[str] = []
     for raw in text.split("\n"):
-        parts.extend(wrap_log_line(raw, max_len))
-    return "\n".join(parts) + ("\n" if parts else "")
+        collapsed = collapse_cr_line(raw)
+        if collapsed:
+            parts.extend(wrap_log_line(collapsed, max_len))
+        elif raw == "":
+            parts.append("")
+    out = "\n".join(parts)
+    if text.endswith("\n") and (parts or text == "\n"):
+        out += "\n"
+    return out
 
 
 def run_process_logging(
@@ -61,7 +82,7 @@ def run_process_logging(
     env: dict[str, str] | None = None,
     max_line: int = DEFAULT_MAX_LINE,
 ) -> int:
-    """subprocess を逐次読み、\\r 含む進捗も行単位で log に流す。"""
+    """subprocess 出力をそのまま転送（\\r 進捗を改行にしない）。"""
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -72,25 +93,14 @@ def run_process_logging(
         env=env,
     )
     assert proc.stdout is not None
-    pending = ""
     try:
         while True:
             chunk = proc.stdout.read(4096)
             if chunk:
-                pending += chunk
-                complete, pending = split_log_buffer(pending)
-                for line in complete:
-                    emit_log_line(log, line, max_line)
-                    try:
-                        import sys
-
-                        sys.stdout.flush()
-                    except Exception:
-                        pass
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
             elif proc.poll() is not None:
                 break
-        if pending.strip():
-            emit_log_line(log, pending, max_line)
     finally:
         proc.stdout.close()
     return proc.wait()

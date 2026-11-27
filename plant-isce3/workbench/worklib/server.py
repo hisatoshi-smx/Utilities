@@ -17,6 +17,7 @@ from .config import ExplorerConfig, check_runnable
 from .inspect import inspect_nisar
 from .output_names import suggest_output_basenames
 from .projects import APP_DIR, PROJECTS_DIR, Project, ProjectError, create_project, delete_project, list_projects
+from .roi_vector import bounds_from_vector, roi_to_kml, vector_path_allowed
 
 STATIC_DIR = os.path.join(APP_DIR, "static")
 STATIC_PREFIX = "/explorer-static/"
@@ -94,6 +95,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _download(self, status: int, data: bytes, content_type: str, filename: str):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(data)
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
@@ -189,14 +198,19 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 proj = _proj(m[1])
                 cfg = proj.load()
-                if not cfg.input_h5 or not os.path.isfile(cfg.input_h5):
-                    raise ApiError("入力 HDF5 を指定して保存してください")
-                info = inspect_nisar(cfg.input_h5, cfg.frequency)
+                h5 = (body.get("input_h5") or cfg.input_h5 or "").strip()
+                if not h5 or not os.path.isfile(h5):
+                    raise ApiError("入力 HDF5 のパスが不正か、ファイルがありません")
+                freq = body.get("frequency") or cfg.frequency
+                pol = body.get("polarization") or cfg.polarization
+                geo = body.get("geocode") if isinstance(body.get("geocode"), dict) else {}
+                geocode_mode = geo.get("output") or cfg.geocode.output
+                info = inspect_nisar(h5, freq)
                 info["suggested_outputs"] = suggest_output_basenames(
                     info,
-                    frequency=cfg.frequency,
-                    polarization=cfg.polarization,
-                    geocode_mode=cfg.geocode.output,
+                    frequency=freq,
+                    polarization=pol,
+                    geocode_mode=geocode_mode,
                 )
                 proj.write_json(info, "work", "product.json")
                 self._json(200, {"product": info, "suggested_outputs": info["suggested_outputs"], "project": _payload(proj)})
@@ -236,6 +250,42 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "message": "サーバーを終了します"})
                 if self.on_shutdown:
                     threading.Thread(target=self.on_shutdown, daemon=True).start()
+                return
+            if path == "/api/roi/import":
+                vpath = (body.get("path") or "").strip()
+                if not vpath:
+                    raise ApiError("path を指定してください")
+                if not vector_path_allowed(vpath):
+                    raise ApiError("KML / KMZ / SHP / GPKG のみ対応しています")
+                try:
+                    roi = bounds_from_vector(vpath)
+                except FileNotFoundError:
+                    raise ApiError("ファイルがありません", 404)
+                except ValueError as e:
+                    raise ApiError(str(e))
+                except RuntimeError as e:
+                    raise ApiError(str(e))
+                self._json(200, {"roi": roi, "source": os.path.abspath(vpath)})
+                return
+            if path == "/api/roi/export":
+                roi = body.get("roi") or {}
+                try:
+                    w, s, e, n = float(roi["west"]), float(roi["south"]), float(roi["east"]), float(roi["north"])
+                except (KeyError, TypeError, ValueError):
+                    raise ApiError("有効な ROI（西・南・東・北）を指定してください")
+                if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
+                    raise ApiError("ROI の座標が不正です")
+                label = (body.get("name") or "explorer_roi").strip() or "explorer_roi"
+                fname = (body.get("filename") or f"{label}.kml").strip()
+                if not fname.lower().endswith(".kml"):
+                    fname += ".kml"
+                kml = roi_to_kml({"west": w, "south": s, "east": e, "north": n}, name=label)
+                self._download(
+                    200,
+                    kml.encode("utf-8"),
+                    "application/vnd.google-earth.kml+xml",
+                    fname.replace('"', "_"),
+                )
                 return
             self._json(404, {"error": "Not found"})
         except ApiError as e:

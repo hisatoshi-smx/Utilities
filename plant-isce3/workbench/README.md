@@ -8,7 +8,7 @@ plant-isce3 のコマンドをブラウザ GUI から試すための **別アプ
 |------|------|
 | 目的 | **単発で** plant-isce3 を試す（geocode / rtc） |
 | 入力 | **NISAR RSLC（HDF5）** 中心 |
-| 画面 | argparse **自動展開**フォーム + **Leaflet** で ROI |
+| 画面 | argparse **自動展開**フォーム + **Leaflet** で ROI（地図描画・**KML/KMZ/SHP/GPKG 読込**・**KML 書出**） |
 | DEM | **国土地理院タイル自動取得**（別 env `dem_downloader` を subprocess）／Copernicus GLO-30／任意ファイル。出力は **WGS84 楕円体高** |
 | プロジェクト | `projects/<名前>/` に設定・ログ・出力を保存 |
 | 構成 | 1 プロジェクトで入力・ROI・DEM を共有し、**geocode / rtc をタブで別実行** |
@@ -43,6 +43,10 @@ projects/<名>/logs/          実行ログ
 python -m pytest -q tests
 ```
 
+## ROI（ベクター）
+
+ROI 欄の **ベクター読込** で KML / KMZ / SHP / GPKG を選択すると、全レイヤの地物の **外接矩形（WGS84）** を ROI に反映します（地図で矩形を描くのと同じ形式）。**KML 書出** で現在の ROI を矩形ポリゴンの KML としてダウンロードできます。
+
 ## グリッド・出力
 
 - **グリッド間隔 (m)** を空欄にすると、NISAR RSLC のスワス中央における **地上方位・地上距離ピクセル間隔の細い方** を自動使用します（`isce3.product.get_radar_grid_nominal_ground_spacing`）。
@@ -76,8 +80,12 @@ geocode（RTC 付き）と **rtc タブ**の実行が成功したあと、GeoTIF
 ## GUI のその他
 
 - 起動時に **最後に開いたプロジェクト** を復元します（`localStorage`）。
-- 新規プロジェクトの初期 ROI は **東京駅周辺** です。
+- 地図の初期 ROI は **① ブラウザに保存した直近の ROI**、**② なければ関東地方付近** の順です（プロジェクトに ROI があればそちらを優先）。
 - **NISAR を読み込む** でメタデータ・フットプリント・推奨グリッド間隔・推奨出力名を反映します。
+
+## DEM の再利用
+
+ジオコード / rtc 実行のたびに DEM を準備しますが、**ROI（余白込みの取得範囲）と DEM 取得設定が前回と同一**で、かつ `work/dem/dem_wgs84_ellipsoid.tif` が残っている場合は **ダウンロード・切り出しをスキップ**して既存ファイルを使います。ROI や DEM ソース・ファイルパス・国土地理院モードなどを変えると再取得します。
 
 ## 今後の拡張
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 
 import numpy as np
+
+_META_NAME = "dem_prepare.json"
 
 # ccd3 と同系の Copernicus / ファイル DEM
 _COP30_URL = (
@@ -98,11 +101,58 @@ def download_gsi(bounds: list[float], mode: str, out_path: str, log=print) -> st
     return run_gsi_download(bounds, mode, out_path, log=log)
 
 
+def dem_prepare_signature(
+    source: str,
+    path: str,
+    gsi_mode: str,
+    vertical_datum: str,
+    bounds: list[float],
+) -> dict:
+    """取得済み DEM を再利用できるか判定するためのキー（ROI 余白込みの bounds 含む）。"""
+    vd = vertical_datum
+    if source == "copernicus":
+        vd = "egm2008"
+    elif source == "gsi":
+        vd = "ellipsoid"
+    return {
+        "source": source,
+        "path": os.path.abspath(path) if source == "file" and path else "",
+        "gsi_mode": gsi_mode if source == "gsi" else "",
+        "vertical_datum": vd,
+        "bounds": [round(float(x), 8) for x in bounds],
+    }
+
+
+def _read_prepare_meta(workdir: str) -> dict | None:
+    p = os.path.join(workdir, _META_NAME)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_prepare_meta(workdir: str, sig: dict) -> None:
+    with open(os.path.join(workdir, _META_NAME), "w", encoding="utf-8") as f:
+        json.dump(sig, f, ensure_ascii=False, indent=2)
+
+
 def prepare_dem(source: str, path: str, gsi_mode: str, vertical_datum: str,
                 bounds: list[float], workdir: str, log=print) -> str:
     os.makedirs(workdir, exist_ok=True)
     out = os.path.join(workdir, "dem_wgs84_ellipsoid.tif")
     raw = os.path.join(workdir, "dem_raw.tif")
+    sig = dem_prepare_signature(source, path, gsi_mode, vertical_datum, bounds)
+    if os.path.isfile(out) and _read_prepare_meta(workdir) == sig:
+        gdal = _gdal()
+        ds = gdal.Open(out)
+        if ds is not None:
+            log("DEM を再利用します（ROI と取得設定が前回と同じ）")
+            log(f"  DEM: {ds.RasterXSize} x {ds.RasterYSize} px")
+            ds = None
+            return out
     for p in (raw, out):
         if os.path.isfile(p):
             os.remove(p)
@@ -123,4 +173,5 @@ def prepare_dem(source: str, path: str, gsi_mode: str, vertical_datum: str,
     ds = gdal.Open(out)
     log(f"  DEM: {ds.RasterXSize} x {ds.RasterYSize} px")
     ds = None
+    _write_prepare_meta(workdir, sig)
     return out

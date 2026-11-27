@@ -24,7 +24,13 @@
       </nav>
       <div id="panelCommon" class="panel">
         <label>説明 <input id="description" type="text"/></label>
-        <label>NISAR RSLC <input id="inputH5" type="text"/><button type="button" class="browse" data-ext="h5">参照</button></label>
+        <label class="file-row">NISAR RSLC
+          <span class="file-input-row">
+            <input id="inputH5" type="text"/>
+            <button type="button" class="browse" data-ext="h5">参照</button>
+            <button type="button" id="btnInspect" title="HDF5 のメタデータを読み、出力ファイル名・観測範囲などを反映します">NISAR を読み込む</button>
+          </span>
+        </label>
         <label>周波数 <select id="frequency"><option value="A">A</option><option value="B">B</option></select></label>
         <label>偏波（出力）
           <select id="polarization">
@@ -38,6 +44,8 @@
         <div class="map-toolbar">
           <button type="button" id="btnDrawRoi">地図で矩形を描く</button>
           <button type="button" id="btnClearDraw" class="muted">キャンセル (Esc)</button>
+          <button type="button" id="btnRoiImport" title="KML / KMZ / SHP / GPKG から外接矩形を ROI にする">ベクター読込</button>
+          <button type="button" id="btnRoiExportKml" title="いまの ROI を KML でダウンロード">KML 書出</button>
         </div>
         <p id="mapHint" class="map-hint"></p>
         <div class="map-wrap"><div id="map"></div></div>
@@ -76,10 +84,9 @@
           <input id="outputRtc" type="text" placeholder="空欄＝ product.json の推奨名（NISAR 読み込みで自動入力）"/>
         </label>
         <p class="hint" id="outputNameHint">例: NISAR_tr125_fA_HH_20260622_geocode_rtc_gamma.tif（衛星・軌道・周波数・偏波・観測日・処理種別）</p>
-        <p class="hint">「設定を保存」で <code>project.yaml</code> に書き込みます。「NISAR を読み込む」は HDF5 のメタデータ（観測範囲・日時など）を取得し、地図に灰色で表示します（先に保存が必要）。</p>
+        <p class="hint">「設定を保存」で <code>project.yaml</code> に書き込みます。NISAR ファイルを指定・参照すると出力ファイル名を自動更新し、「NISAR を読み込む」で地図に観測範囲も表示します。</p>
         <div class="actions">
           <button type="button" id="btnSave" title="入力・ROI・DEM をプロジェクトに保存します">設定を保存</button>
-          <button type="button" id="btnInspect" title="保存済みの HDF5 から軌跡・フットプリント等を読み、地図に観測範囲を表示します">NISAR を読み込む</button>
         </div>
         <p id="checkMsg" class="check"></p>
       </div>

@@ -1,8 +1,9 @@
 /* Plant-ISCE3 エクスプローラ — Vanilla JS */
 const $ = (id) => document.getElementById(id);
 const LAST_PROJECT_KEY = "plant_isce3_explorer_last_project";
-/** 東京駅周辺（新規プロジェクトの初期 ROI） */
-const TOKYO_ROI = { west: 139.748, south: 35.655, east: 139.772, north: 35.675 };
+const LAST_ROI_KEY = "plant_isce3_explorer_last_roi";
+/** プロジェクト未設定時のフォールバック（日本・関東地方おおよそ） */
+const KANTO_ROI = { west: 138.75, south: 34.85, east: 140.35, north: 36.25 };
 const state = {
   project: null, config: null, tab: "common", schemas: {}, running: false, logOffset: 0,
   fsTarget: null, map: null, roiMode: null, roiLayer: null, footprintLayer: null,
@@ -10,9 +11,27 @@ const state = {
 let dragStart = null, dragRect = null;
 const LOG_VIEW_MAX = 120_000;
 
-function normalizeLogChunk(text) {
-  if (!text) return "";
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+/** \\r を改行にせず、進捗行はログ末尾 1 行を上書きする */
+function applyLogChunk(cur, text) {
+  if (!text) return cur;
+  text = text.replace(/\r\n/g, "\n");
+  let line = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\r") {
+      line = "";
+    } else if (ch === "\n") {
+      cur += line + "\n";
+      line = "";
+    } else {
+      line += ch;
+    }
+  }
+  if (line.length || text.includes("\r")) {
+    const nl = cur.lastIndexOf("\n");
+    cur = nl < 0 ? line : cur.slice(0, nl + 1) + line;
+  }
+  return cur;
 }
 
 function trimLogView() {
@@ -24,9 +43,9 @@ function trimLogView() {
 
 function appendLog(text) {
   if (!text) return;
-  $("logBox").textContent += normalizeLogChunk(text);
-  trimLogView();
   const box = $("logBox");
+  box.textContent = applyLogChunk(box.textContent, text);
+  trimLogView();
   box.scrollTop = box.scrollHeight;
   const n = (box.textContent.match(/\n/g) || []).length + 1;
   const meta = $("logMeta");
@@ -85,6 +104,28 @@ function roiValid(r) {
     && r.west < r.east && r.south < r.north;
 }
 
+function readStoredRoi() {
+  try {
+    const r = JSON.parse(localStorage.getItem(LAST_ROI_KEY) || "null");
+    if (r && roiValid(r)) return r;
+  } catch (_) {}
+  return null;
+}
+
+function storeRoi(r) {
+  if (!roiValid(r)) return;
+  try {
+    localStorage.setItem(LAST_ROI_KEY, JSON.stringify({
+      west: +r.west, south: +r.south, east: +r.east, north: +r.north,
+    }));
+  } catch (_) {}
+}
+
+/** ① ブラウザに保存した ROI、② なければ関東付近 */
+function defaultRoi() {
+  return readStoredRoi() || KANTO_ROI;
+}
+
 function writeRoiInputs(r) {
   const f = (x) => (x == null || Number.isNaN(x) ? "" : +x);
   $("roiWest").value = f(r.west); $("roiSouth").value = f(r.south);
@@ -133,12 +174,14 @@ function finishDrag(e) {
   dragRect = null;
   setRoiMode(null);
   if (b.getNorth() - b.getSouth() < 1e-5 || b.getEast() - b.getWest() < 1e-5) return;
-  setRoi({ west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() });
+  const drawn = { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() };
+  setRoi(drawn);
+  storeRoi(drawn);
 }
 
 function initMap() {
   if (state.map) return;
-  state.map = L.map("map", { preferCanvas: true }).setView([35.67, 139.76], 14);
+  state.map = L.map("map", { preferCanvas: true }).setView([35.55, 139.55], 9);
   L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png", { attribution: "GSI", maxZoom: 18 }).addTo(state.map);
   state.roiLayer = L.layerGroup().addTo(state.map);
   state.footprintLayer = L.layerGroup().addTo(state.map);
@@ -154,8 +197,7 @@ function initMap() {
   });
   state.map.on("mouseup", finishDrag);
   setTimeout(() => state.map.invalidateSize(), 100);
-  writeRoiInputs(TOKYO_ROI);
-  drawRoiRect(true);
+  setRoi(defaultRoi(), { fit: true });
 }
 
 const CONFIG_SEND_STRIP = new Set([
@@ -216,9 +258,11 @@ function fillForm(payload) {
   $("polarization").value = ["HH", "HV", "HH_HV"].includes(pol) ? pol : "HH";
   updatePolarizationHint(cfg);
   const r = cfg.roi || {};
-  if (r.west != null) setRoi(r, { fit: false });
-  else {
-    setRoi(TOKYO_ROI, { fit: true });
+  if (r.west != null) {
+    setRoi(r, { fit: false });
+    storeRoi(r);
+  } else {
+    setRoi(defaultRoi(), { fit: true });
   }
   $("demSource").value = cfg.dem?.source || "gsi";
   $("demPath").value = cfg.dem?.path || "";
@@ -372,6 +416,7 @@ async function saveConfig() {
   state.config = p.config;
   state.config.check = p.check;
   fillForm(p);
+  storeRoi(roiFromFields());
   if (p.check?.errors?.length) showBanner("");
   else showBanner("設定を保存しました。", "info");
 }
@@ -444,62 +489,121 @@ $("btnNewProject").onclick = async () => {
   await refreshProjects();
   $("projectSelect").value = name.trim();
   await loadProject(name.trim());
-  if (!state.config?.roi?.west) setRoi(TOKYO_ROI, { fit: true });
+  if (!state.config?.roi?.west) setRoi(defaultRoi(), { fit: true });
   showBanner(`プロジェクト「${name.trim()}」を作成しました。NISAR ファイルと ROI を設定して「保存」してください。`, "info");
 };
-$("polarization")?.addEventListener("change", () => updatePolarizationHint(state.config));
+function inspectRequestBody() {
+  return {
+    input_h5: $("inputH5").value.trim(),
+    frequency: $("frequency").value,
+    polarization: $("polarization").value,
+    geocode: { output: $("geocodeOutput")?.value || "rtc_gamma" },
+  };
+}
+
+function applySuggestedOutputs(sug) {
+  if (!sug) return;
+  if (sug.geocode) $("outputGeocode").value = sug.geocode;
+  if (sug.rtc) $("outputRtc").value = sug.rtc;
+  if (sug.geocode || sug.rtc) {
+    $("outputNameHint").textContent =
+      `出力ファイル名を更新しました（変更したら「設定を保存」）。例: ${sug.geocode || sug.rtc}`;
+  }
+}
+
+function applyInspectResult(r, { showFootprint = true } = {}) {
+  const prod = r.product || {};
+  if (showFootprint && prod.footprint?.length && state.map) {
+    state.footprintLayer.clearLayers();
+    const poly = L.polygon(prod.footprint.map((c) => [c[1], c[0]]), {
+      color: "#888", weight: 1, fillOpacity: 0.08,
+    }).addTo(state.footprintLayer);
+    state.map.fitBounds(poly.getBounds().pad(0.05));
+  }
+  if (prod.spacing?.recommended_m && !$("gridSpacing").value.trim()) {
+    const s = prod.spacing;
+    $("gridSpacingHint").textContent =
+      `推奨（自動）: ${s.recommended_m} m（地上方位 ${s.azimuth_m} m、地上距離 ${s.ground_range_m} m、周波数 ${s.frequency || ""}）`;
+  }
+  if (prod.polarizations_available?.length) {
+    state.inspectMeta = { polarizations_available: prod.polarizations_available };
+    updatePolarizationHint(state.config, prod.polarizations_available);
+  }
+  applySuggestedOutputs(r.suggested_outputs || prod.suggested_outputs);
+  if (prod.frequencies?.length && !$("frequency").dataset.userPicked) {
+    const f0 = prod.frequencies[0];
+    if (f0 === "A" || f0 === "B") $("frequency").value = f0;
+  }
+}
+
+let _inspectTimer = null;
+let _inspectInflight = null;
+
+async function runNisarInspect({ showFootprint = true, announce = true } = {}) {
+  if (!requireProject()) return false;
+  const h5 = $("inputH5").value.trim();
+  if (!h5) {
+    if (announce) showBanner("NISAR の HDF5 パスを指定してください。", "error");
+    return false;
+  }
+  if (_inspectInflight) {
+    try { await _inspectInflight; } catch (_) {}
+  }
+  const run = (async () => {
+    const r = await api(
+      "/api/projects/" + encodeURIComponent(state.project) + "/inspect",
+      "POST",
+      inspectRequestBody(),
+    );
+    applyInspectResult(r, { showFootprint });
+    if (announce) {
+      const prod = r.product || {};
+      const bits = [prod.datetime, prod.track, prod.direction].filter(Boolean);
+      const msg = bits.length ? bits.join(" · ") : "メタデータを読み込みました";
+      showBanner(`NISAR データを読み込みました（${msg}）。灰色の枠が観測範囲です。`, "info");
+    }
+    return true;
+  })();
+  _inspectInflight = run;
+  try {
+    return await run;
+  } catch (err) {
+    if (announce) showBanner("NISAR の読み込みに失敗: " + err.message, "error");
+    return false;
+  } finally {
+    if (_inspectInflight === run) _inspectInflight = null;
+  }
+}
+
+function scheduleNisarInspect() {
+  clearTimeout(_inspectTimer);
+  if (!$("inputH5").value.trim()) return;
+  _inspectTimer = setTimeout(
+    () => runNisarInspect({ showFootprint: false, announce: false }),
+    450,
+  );
+}
+
+$("polarization")?.addEventListener("change", () => {
+  updatePolarizationHint(state.config);
+  scheduleNisarInspect();
+});
+$("frequency")?.addEventListener("change", () => {
+  $("frequency").dataset.userPicked = "1";
+  scheduleNisarInspect();
+});
 $("geocodeOutput")?.addEventListener("change", () => {
   if (state.tab === "geocode") {
     $("toolHint").textContent = $("geocodeOutput").value === "rtc_gamma"
       ? "plant_isce3_geocode で地図投影し、area-projection RTC（γ⁰）を適用します。下の plant オプションで補正方式などを上書きできます。"
       : "isce3.geocode_slc で複素 GSLC を地図投影します（距離位相フラットニングあり、放射地形補正なし）。";
   }
+  scheduleNisarInspect();
 });
+$("inputH5")?.addEventListener("change", () => scheduleNisarInspect());
 $("btnLogClear").onclick = () => { clearLogView(); };
 $("btnSave").onclick = () => saveConfig();
-$("btnInspect").onclick = async () => {
-  if (!requireProject()) return;
-  if (!$("inputH5").value.trim()) {
-    showBanner("先に NISAR の HDF5 パスを指定し「設定を保存」してください。", "error");
-    return;
-  }
-  await saveConfig();
-  try {
-    const r = await api("/api/projects/" + encodeURIComponent(state.project) + "/inspect", "POST", {});
-    const prod = r.product || {};
-    const fp = prod.footprint;
-    if (fp?.length && state.map) {
-      state.footprintLayer.clearLayers();
-      const poly = L.polygon(fp.map((c) => [c[1], c[0]]), { color: "#888", weight: 1, fillOpacity: 0.08 }).addTo(state.footprintLayer);
-      state.map.fitBounds(poly.getBounds().pad(0.05));
-    }
-    const bits = [prod.datetime, prod.track, prod.direction].filter(Boolean);
-    const msg = bits.length ? bits.join(" · ") : "メタデータを読み込みました";
-    showBanner(`NISAR データを読み込みました（${msg}）。灰色の枠が観測範囲です。`, "info");
-    if (prod.spacing?.recommended_m && !$("gridSpacing").value.trim()) {
-      const s = prod.spacing;
-      $("gridSpacingHint").textContent =
-        `推奨（自動）: ${s.recommended_m} m（地上方位 ${s.azimuth_m} m、地上距離 ${s.ground_range_m} m、周波数 ${s.frequency || ""}）`;
-    }
-    if (prod.polarizations_available?.length) {
-      state.inspectMeta = { polarizations_available: prod.polarizations_available };
-      updatePolarizationHint(state.config, prod.polarizations_available);
-    }
-    const sug = r.suggested_outputs || prod.suggested_outputs;
-    if (sug) {
-      if (!$("outputGeocode").value.trim() && sug.geocode) $("outputGeocode").value = sug.geocode;
-      if (!$("outputRtc").value.trim() && sug.rtc) $("outputRtc").value = sug.rtc;
-      $("outputNameHint").textContent =
-        `推奨ファイル名を入力欄に入れました（変更したら「設定を保存」）。例: ${sug.geocode}`;
-    }
-    if (prod.frequencies?.length && !$("frequency").dataset.userPicked) {
-      const f0 = prod.frequencies[0];
-      if (f0 === "A" || f0 === "B") $("frequency").value = f0;
-    }
-  } catch (err) {
-    showBanner("NISAR の読み込みに失敗: " + err.message, "error");
-  }
-};
+$("btnInspect").onclick = () => runNisarInspect({ showFootprint: true, announce: true });
 $("btnRun").onclick = () => runTool();
 $("btnCancel").onclick = async () => {
   if (state.project) await api("/api/projects/" + encodeURIComponent(state.project) + "/cancel", "POST", {});
@@ -534,17 +638,70 @@ document.addEventListener("keydown", (e) => {
     setRoiMode(null);
   }
 });
-["roiWest", "roiSouth", "roiEast", "roiNorth"].forEach((id) => $(id).addEventListener("change", () => drawRoiRect(false)));
+["roiWest", "roiSouth", "roiEast", "roiNorth"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    drawRoiRect(false);
+    storeRoi(roiFromFields());
+  })
+);
 $("demSource").addEventListener("change", toggleDemRows);
 
 let browseExts = "";
 document.querySelectorAll(".browse").forEach((btn) => {
   btn.onclick = () => {
+    state.fsPurpose = "field";
     browseExts = btn.dataset.ext || "";
     state.fsTarget = btn.previousElementSibling?.tagName === "INPUT" ? btn.previousElementSibling : $("inputH5");
     openFs(state.fsTarget.value ? state.fsTarget.value.replace(/[^/\\]+$/, "") : "");
   };
 });
+
+async function importRoiVector(path) {
+  const r = await api("/api/roi/import", "POST", { path });
+  setRoi(r.roi, { fit: true });
+  storeRoi(r.roi);
+  showBanner("ベクターから ROI を読み込みました。", "info");
+}
+
+async function exportRoiKml() {
+  const r = roiFromFields();
+  if (!roiValid(r)) {
+    showBanner("ROI が未設定です。", "error");
+    return;
+  }
+  const label = state.project || "explorer_roi";
+  const resp = await fetch("/api/roi/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roi: r, name: label, filename: `${label}.kml` }),
+  });
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => ({}));
+    throw new Error(j.error || resp.statusText);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${label}.kml`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showBanner("KML をダウンロードしました。", "info");
+}
+
+$("btnRoiImport").onclick = () => {
+  if (!requireProject()) return;
+  state.fsPurpose = "roi";
+  browseExts = "kml,kmz,shp,gpkg";
+  openFs("");
+};
+$("btnRoiExportKml").onclick = async () => {
+  try {
+    await exportRoiKml();
+  } catch (err) {
+    showBanner("KML 書き出しに失敗: " + err.message, "error");
+  }
+};
 
 async function openFs(path) {
   const r = await api("/api/fs?path=" + encodeURIComponent(path || "") + "&ext=" + encodeURIComponent(browseExts));
@@ -578,8 +735,22 @@ function closeFsDlg() {
   if (state.map) state.map.getContainer().style.pointerEvents = "";
   setTimeout(() => state.map?.invalidateSize(), 50);
 }
-$("fsPick").onclick = () => {
-  if (state._pick && state.fsTarget) state.fsTarget.value = state._pick;
+$("fsPick").onclick = async () => {
+  if (!state._pick) {
+    closeFsDlg();
+    return;
+  }
+  try {
+    if (state.fsPurpose === "roi") {
+      await importRoiVector(state._pick);
+    } else if (state.fsTarget) {
+      state.fsTarget.value = state._pick;
+      if (state.fsTarget === $("inputH5")) scheduleNisarInspect();
+    }
+  } catch (err) {
+    showBanner(err.message || String(err), "error");
+  }
+  state.fsPurpose = "field";
   closeFsDlg();
 };
 $("fsClose").onclick = () => closeFsDlg();

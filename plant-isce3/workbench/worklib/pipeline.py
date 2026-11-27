@@ -95,6 +95,18 @@ def run_tool(tool: str, argv: list[str], log=print) -> int:
         return int(e.code or 0)
 
 
+def _tool_run_label(tool: str, cfg: ExplorerConfig) -> str:
+    if tool == "rtc":
+        return "rtc"
+    if cfg.geocode.output == "complex_gslc":
+        return "geocode（複素 GSLC）"
+    return "geocode（RTC 付き γ⁰）"
+
+
+def log_run_success(log, tool: str, cfg: ExplorerConfig) -> None:
+    log(f"--- 全ての処理がエラーなく完了しました（{_tool_run_label(tool, cfg)}） ---")
+
+
 def run_project_tool(proj: Project, tool: str, log=_log) -> int:
     cfg = proj.load()
     meta = prepare_workspace(proj, cfg, log=log)
@@ -136,6 +148,7 @@ def run_project_tool(proj: Project, tool: str, log=_log) -> int:
                     raise RuntimeError(f"出力ファイルがありません: {p}")
                 tag_geotiff_bands(p, [labels[i]] if i < len(labels) else labels[:1])
                 log(f"出力: {p}（バンド名: {labels[i] if i < len(labels) else labels[0]}）")
+            log_run_success(log, tool, cfg)
             return 0
         argv = build_tool_argv(proj, cfg, tool)
         argv = apply_rtc_geocode_argv(argv, cfg.polarization)
@@ -149,6 +162,7 @@ def run_project_tool(proj: Project, tool: str, log=_log) -> int:
         labels = band_descriptions(cfg, "geocode")
         tag_geotiff_bands(out, labels)
         log(f"出力: {out}（バンド: {', '.join(labels)}）")
+        log_run_success(log, tool, cfg)
         return rc
     argv = prepare_plant_argv(build_tool_argv(proj, cfg, tool))
     if tool == "rtc":
@@ -164,4 +178,5 @@ def run_project_tool(proj: Project, tool: str, log=_log) -> int:
     labels = band_descriptions(cfg, tool)
     tag_geotiff_bands(out, labels)
     log(f"出力: {out}（バンド: {', '.join(labels)}）")
+    log_run_success(log, tool, cfg)
     return rc

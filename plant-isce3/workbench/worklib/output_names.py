@@ -26,6 +26,20 @@ def _sat_slug(info: dict[str, Any]) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "", plat) or "NISAR"
 
 
+def _direction_code(direction: str) -> str | None:
+    """軌道方向: Ascending→A, Descending→D（NISAR orbitPassDirection）。"""
+    d = (direction or "").strip().upper()
+    if not d:
+        return None
+    if d.startswith("ASC"):
+        return "A"
+    if d.startswith("DESC"):
+        return "D"
+    if d[0] in "AD":
+        return d[0]
+    return None
+
+
 def suggest_output_basenames(
     info: dict[str, Any],
     *,
@@ -46,9 +60,9 @@ def suggest_output_basenames(
     parts.append(f"f{freq}")
     parts.append(polarization_label(polarization))
     parts.append(_date_yyyymmdd(info.get("datetime") or "", info.get("path") or ""))
-    direction = (info.get("direction") or "").strip().upper()
-    if direction and direction[0] in "AN":  # Ascending / Northbound 等の先頭
-        parts.append(direction[0])
+    dir_code = _direction_code(info.get("direction") or "")
+    if dir_code:
+        parts.append(dir_code)
     stem = "_".join(parts)
     geo_kind = "gslc" if geocode_mode == "complex_gslc" else "rtc_gamma"
     return {

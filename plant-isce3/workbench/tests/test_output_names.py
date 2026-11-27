@@ -1,4 +1,4 @@
-from worklib.output_names import suggest_output_basenames
+from worklib.output_names import _direction_code, suggest_output_basenames
 
 
 def test_suggest_nisar_names():
@@ -11,6 +11,23 @@ def test_suggest_nisar_names():
         "direction": "Ascending",
     }
     names = suggest_output_basenames(info, frequency="A", polarization="HH", geocode_mode="rtc_gamma")
-    assert names["geocode"].startswith("NISAR_tr125_fr18_fA_HH_20260622")
+    assert names["geocode"].startswith("NISAR_tr125_fr18_fA_HH_20260622_A_")
     assert names["geocode"].endswith("_geocode_rtc_gamma.tif")
     assert "_rtc_radar.tif" in names["rtc"]
+
+
+def test_direction_code_descending():
+    assert _direction_code("Descending") == "D"
+    assert _direction_code("Ascending") == "A"
+
+
+def test_suggest_descending_in_filename():
+    info = {
+        "platform": "NISAR",
+        "datetime": "2026-07-16 12:00:00",
+        "track": 125,
+        "direction": "Descending",
+    }
+    names = suggest_output_basenames(info, frequency="A", polarization="HH_HV", geocode_mode="rtc_gamma")
+    assert "_D_geocode_rtc_gamma.tif" in names["geocode"]
+    assert "_D_rtc_radar.tif" in names["rtc"]
