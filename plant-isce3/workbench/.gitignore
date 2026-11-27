@@ -1,0 +1,4 @@
+projects/*
+!projects/.gitkeep
+__pycache__/
+.pytest_cache/

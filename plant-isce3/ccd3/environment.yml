@@ -1,0 +1,28 @@
+name: plant-isce3
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  # plant-isce3 本体（isce3 / plant / gdal などの依存も一緒に入る）
+  # 実行時は ../src/plant-isce3/src に同梱ソースがあればそちらを優先して読み込む
+  - plant-isce3>=0.3.6
+  - isce3>=0.25.0
+  - plant>=0.8.6
+  - gdal>=3.8
+  - libgdal-hdf5
+  - libgdal-netcdf
+  - numpy
+  - scipy
+  - h5py
+  - shapely
+  - pyproj
+  # Sentinel-1 バースト読み込み
+  - s1reader
+  # 精密軌道（POEORB）自動ダウンロード
+  - sentineleof
+  # GUI サーバー
+  - pyyaml
+  - pydantic>=2
+  # テスト
+  - pytest

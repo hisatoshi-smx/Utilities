@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Plant-ISCE3 エクスプローラ</title>
+  <link rel="stylesheet" href="/explorer-static/vendor/leaflet/leaflet.css"/>
+  <link rel="stylesheet" href="/explorer-static/style.css"/>
+</head>
+<body>
+  <header class="top">
+    <h1>Plant-ISCE3 エクスプローラ</h1>
+    <label class="top-label">プロジェクト <select id="projectSelect"></select></label>
+    <button type="button" id="btnNewProject" title="設定・ログ・出力をまとめて保存する作業フォルダ（projects/名前/）を新しく作ります">＋ 新しいプロジェクトを作成</button>
+    <button type="button" id="btnShutdown" class="muted" title="この GUI サーバーを停止します">⏻ サーバー終了</button>
+  </header>
+  <div id="banner" class="banner hidden"></div>
+  <main class="layout">
+    <aside class="side">
+      <nav class="tabs" id="mainTabs">
+        <button type="button" data-tab="common" class="active">共通</button>
+        <button type="button" data-tab="geocode">geocode</button>
+        <button type="button" data-tab="rtc">rtc</button>
+      </nav>
+      <div id="panelCommon" class="panel">
+        <label>説明 <input id="description" type="text"/></label>
+        <label>NISAR RSLC <input id="inputH5" type="text"/><button type="button" class="browse" data-ext="h5">参照</button></label>
+        <label>周波数 <select id="frequency"><option value="A">A</option><option value="B">B</option></select></label>
+        <label>偏波 <input id="polarization" value="HH"/></label>
+        <h3>ROI</h3>
+        <div class="map-toolbar">
+          <button type="button" id="btnDrawRoi">地図で矩形を描く</button>
+          <button type="button" id="btnClearDraw" class="muted">キャンセル (Esc)</button>
+        </div>
+        <p id="mapHint" class="map-hint"></p>
+        <div class="map-wrap"><div id="map"></div></div>
+        <p id="roiInfo" class="map-hint"></p>
+        <div class="roi-fields">
+          <input id="roiWest" placeholder="西" type="number" step="any"/>
+          <input id="roiSouth" placeholder="南" type="number" step="any"/>
+          <input id="roiEast" placeholder="東" type="number" step="any"/>
+          <input id="roiNorth" placeholder="北" type="number" step="any"/>
+        </div>
+        <h3>DEM</h3>
+        <label>ソース
+          <select id="demSource">
+            <option value="gsi">国土地理院（自動）</option>
+            <option value="copernicus">Copernicus GLO-30</option>
+            <option value="file">ファイル</option>
+          </select>
+        </label>
+        <label id="demFileRow" class="hidden">パス <input id="demPath" type="text"/><button type="button" class="browse" data-ext="tif,tiff,vrt">参照</button></label>
+        <label id="gsiModeRow">GSI モード
+          <select id="gsiMode">
+            <option value="auto">自動</option>
+            <option value="dem5a">DEM5A</option>
+            <option value="dem5b">DEM5B</option>
+            <option value="dem10b">DEM10B</option>
+          </select>
+        </label>
+        <label>グリッド間隔 (m)
+          <input id="gridSpacing" type="number" value="" min="0.25" step="0.001" placeholder="空欄＝自動（NISAR 地上ピクセル間隔）"/>
+        </label>
+        <p id="gridSpacingHint" class="hint"></p>
+        <label>出力ファイル名（geocode）
+          <input id="outputGeocode" type="text" placeholder="空欄＝ geocode_geocode.tif"/>
+        </label>
+        <label>出力ファイル名（rtc）
+          <input id="outputRtc" type="text" placeholder="空欄＝ rtc_out.tif"/>
+        </label>
+        <p class="hint">「設定を保存」で <code>project.yaml</code> に書き込みます。「NISAR を読み込む」は HDF5 のメタデータ（観測範囲・日時など）を取得し、地図に灰色で表示します（先に保存が必要）。</p>
+        <div class="actions">
+          <button type="button" id="btnSave" title="入力・ROI・DEM をプロジェクトに保存します">設定を保存</button>
+          <button type="button" id="btnInspect" title="保存済みの HDF5 から軌跡・フットプリント等を読み、地図に観測範囲を表示します">NISAR を読み込む</button>
+        </div>
+        <p id="checkMsg" class="check"></p>
+      </div>
+      <div id="panelTool" class="panel hidden">
+        <label id="geocodeModeRow" class="hidden block-label">ジオコードの種類
+          <select id="geocodeOutput">
+            <option value="rtc_gamma">地図上の γ⁰（RTC 付き・推奨）</option>
+            <option value="complex_gslc">複素 GSLC（位相保持・RTC なし）</option>
+          </select>
+        </label>
+        <p class="hint" id="toolHint">共通タブの入力・ROI・DEM と自動設定（出力先など）に加え、以下の plant オプションを指定します。</p>
+        <div id="toolForm" class="tool-form"></div>
+        <div class="actions">
+          <button type="button" id="btnRun" class="primary">▶ 実行</button>
+          <button type="button" id="btnCancel">中止</button>
+        </div>
+      </div>
+    </aside>
+    <section class="log-pane">
+      <div class="log-head">
+        <h3>ログ</h3>
+        <span id="logMeta" class="log-meta"></span>
+        <button type="button" id="btnLogClear" class="muted" title="画面上のログ表示だけを消します（ファイルは残ります）">表示をクリア</button>
+      </div>
+      <pre id="logBox"></pre>
+    </section>
+  </main>
+  <div id="dlgBrowse" class="dlg hidden">
+    <div class="dlg-body">
+      <div id="fsPath"></div>
+      <ul id="fsList"></ul>
+      <button type="button" id="fsPick">選択</button>
+      <button type="button" id="fsClose">閉じる</button>
+    </div>
+  </div>
+  <script src="/explorer-static/vendor/leaflet/leaflet.js"></script>
+  <script src="/explorer-static/app.js"></script>
+</body>
+</html>

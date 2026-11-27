@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>三時期 CCD（plant-isce3）</title>
+<link rel="stylesheet" href="/ccd3-static/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/ccd3-static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>三時期 CCD <small>plant-isce3</small></h1>
+  <div class="proj-bar">
+    <label>プロジェクト
+      <select id="projectSelect"><option value="">（選択してください）</option></select>
+    </label>
+    <button id="newProjectBtn" type="button">＋ 新規</button>
+    <span id="projectRoot" class="muted mono"></span>
+  </div>
+  <button id="shutdownBtn" type="button" class="danger subtle" title="GUI サーバーを終了します（実行中の処理は継続します）">⏻ サーバー終了</button>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div id="noProject" class="placeholder">
+      <p>上の「プロジェクト」から既存のプロジェクトを選ぶか、「＋ 新規」で作成してください。</p>
+      <p class="hint">プロジェクトごとに <code>projects/&lt;名前&gt;/</code> が作られ、設定・中間ファイル・成果物はその中だけに保存されます。</p>
+    </div>
+
+    <form id="configForm" hidden autocomplete="off">
+      <section>
+        <h2>概要</h2>
+        <label class="field">説明（任意）<input id="description" type="text" placeholder="例: 2024 年能登半島地震"></label>
+      </section>
+
+      <section>
+        <h2>1. 入力シーン（3 時期）</h2>
+        <div class="radio-row">
+          <label><input type="radio" name="sensor" value="sentinel1" checked> Sentinel-1 IW SLC（zip）</label>
+          <label><input type="radio" name="sensor" value="nisar_rslc"> NISAR RSLC（HDF5）</label>
+        </div>
+        <p class="hint">順不同で構いません。観測日時順に t1 &lt; t2 &lt; t3 に並べ替え、γpre = γ(t1,t2)、γco = γ(t2,t3) を計算します。</p>
+        <div id="sceneRows"></div>
+        <div class="grid2">
+          <label class="field">偏波
+            <select id="polarization">
+              <option>VV</option><option>VH</option><option>HH</option><option>HV</option>
+            </select>
+          </label>
+          <label class="field nisar-only">周波数（NISAR）
+            <select id="nisarFrequency"><option>A</option><option>B</option></select>
+          </label>
+        </div>
+        <label class="field s1-only">バースト ID（任意・空白／改行区切り）
+          <textarea id="burstIds" rows="2" placeholder="空なら ROI にかかる共通バーストを自動選択。地図上のバーストをクリックしても追加／削除できます"></textarea>
+        </label>
+        <div class="row">
+          <button id="inspectBtn" type="button">保存してシーン情報を読む</button>
+        </div>
+        <div id="sceneInfo" class="info"></div>
+      </section>
+
+      <section>
+        <h2>2. ROI（処理範囲）</h2>
+        <p class="hint">地図から矩形を描くか、中心点＋一辺(km)、または四隅の数値で指定します。未指定なら 3 シーンの共通範囲全体を処理します。</p>
+        <p class="hint section-label">地図で矩形を選択</p>
+        <div class="row">
+          <button id="drawRoiBtn" type="button">□ 矩形を描画</button>
+          <button id="roiFromCommonBtn" type="button" class="subtle">共通範囲にする</button>
+          <button id="roiClearBtn" type="button" class="subtle">クリア</button>
+        </div>
+        <p class="hint section-label">中心点＋四方（km）</p>
+        <div class="roi-grid roi-grid-3">
+          <label>中心 緯度<input id="centerLat" type="number" step="any" placeholder="例: 37.40"></label>
+          <label>中心 経度<input id="centerLon" type="number" step="any" placeholder="例: 136.90"></label>
+          <label>東西 幅 [km]<input id="sizeEwKm" type="number" step="any" min="0" value="10"></label>
+          <label>南北 高さ [km]<input id="sizeNsKm" type="number" step="any" min="0" value="10"></label>
+          <label class="check square-check"><input id="squareLock" type="checkbox" checked> 正方形</label>
+        </div>
+        <div class="row">
+          <button id="pickCenterBtn" type="button">◎ 地図で中心をクリック</button>
+          <button id="roiFromCenterBtn" type="button" class="subtle">この中心と大きさで設定</button>
+        </div>
+        <p class="hint section-label">四隅（WGS84 経緯度）</p>
+        <div class="roi-grid">
+          <label>北<input id="roiNorth" type="number" step="any"></label>
+          <label>西<input id="roiWest" type="number" step="any"></label>
+          <label>東<input id="roiEast" type="number" step="any"></label>
+          <label>南<input id="roiSouth" type="number" step="any"></label>
+        </div>
+        <div id="roiInfo" class="hint"></div>
+      </section>
+
+      <section>
+        <h2>3. 出力グリッド</h2>
+        <div class="grid2">
+          <label class="field">EPSG（空欄で UTM 自動）<input id="gridEpsg" type="number" placeholder="自動（UTM）"></label>
+          <label class="field">画素間隔 [m]<input id="gridSpacing" type="number" step="any" min="0"></label>
+        </div>
+        <div id="gridInfo" class="hint"></div>
+      </section>
+
+      <section>
+        <h2>4. DEM</h2>
+        <div class="radio-row">
+          <label><input type="radio" name="demSource" value="copernicus" checked> Copernicus GLO-30 を自動取得</label>
+          <label><input type="radio" name="demSource" value="file"> ファイルを指定</label>
+        </div>
+        <div class="dem-file-only">
+          <div class="row">
+            <input id="demPath" type="text" placeholder="DEM ファイル（GeoTIFF など）" spellcheck="false">
+            <button type="button" class="browse" data-target="demPath" data-ext=".tif,.tiff,.vrt,.img,.dem,.hgt">参照…</button>
+          </div>
+          <label class="field">高さの基準
+            <select id="demVertical">
+              <option value="egm2008">ジオイド高（EGM2008）／国土地理院 DEM もこれで近似</option>
+              <option value="egm96">ジオイド高（EGM96）</option>
+              <option value="ellipsoid">楕円体高（WGS84）</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">ROI 周囲の余白 [度]<input id="demMargin" type="number" step="any" min="0"></label>
+        <p class="hint">isce3 は楕円体高を使うため、ジオイド高の DEM は自動で変換します（PROJ のジオイドグリッドをネットワーク取得）。</p>
+      </section>
+
+      <section class="s1-only">
+        <h2>5. 軌道（Sentinel-1）</h2>
+        <div class="radio-row">
+          <label><input type="radio" name="orbitMode" value="auto" checked> 自動取得（POEORB → RESORB）</label>
+          <label><input type="radio" name="orbitMode" value="files"> ファイル指定</label>
+          <label><input type="radio" name="orbitMode" value="annotation"> SAFE 内の軌道</label>
+        </div>
+        <div class="orbit-auto-only">
+          <div class="grid2">
+            <label class="field">取得元
+              <select id="orbitProvider">
+                <option value="auto">自動（CDSE → ASF）</option>
+                <option value="cdse">Copernicus Data Space（CDSE）</option>
+                <option value="asf">ASF（NASA Earthdata）</option>
+              </select>
+            </label>
+            <label class="field">netrc（空なら ~/.netrc）
+              <input id="orbitNetrc" type="text" spellcheck="false" placeholder="~/.netrc">
+            </label>
+          </div>
+          <details>
+            <summary>認証情報を入力する（保存されません）</summary>
+            <p class="hint">netrc に登録していない場合のみ。入力値はこの画面から実行するときだけ処理プロセスに渡し、ファイルには保存しません。</p>
+            <div class="grid2">
+              <label class="field">CDSE ユーザー<input id="credCdseUser" type="text" autocomplete="off"></label>
+              <label class="field">CDSE パスワード<input id="credCdsePass" type="password" autocomplete="new-password"></label>
+              <label class="field">Earthdata ユーザー<input id="credAsfUser" type="text" autocomplete="off"></label>
+              <label class="field">Earthdata パスワード<input id="credAsfPass" type="password" autocomplete="new-password"></label>
+            </div>
+          </details>
+        </div>
+        <div class="orbit-files-only" id="orbitRows"></div>
+      </section>
+
+      <section>
+        <h2>6. コヒーレンス・処理</h2>
+        <div class="grid3">
+          <label class="field">窓 X [画素]<input id="winX" type="number" min="1" step="2"></label>
+          <label class="field">窓 Y [画素]<input id="winY" type="number" min="1" step="2"></label>
+          <label class="field">有効画素率の下限<input id="minValid" type="number" min="0.05" max="1" step="0.05"></label>
+          <label class="field">端の削り [画素]<input id="edgeErosion" type="number" min="0" step="1"></label>
+          <label class="field">Δγ 表示範囲 ±<input id="dgammaRange" type="number" min="0.05" max="1" step="0.05"></label>
+          <label class="field">補間
+            <select id="interp">
+              <option value="sinc">sinc</option><option value="biquintic">biquintic</option>
+              <option value="bicubic">bicubic</option><option value="bilinear">bilinear</option>
+              <option value="nearest">nearest</option>
+            </select>
+          </label>
+          <label class="field">スレッド数（空=自動）<input id="ompThreads" type="number" min="1"></label>
+        </div>
+        <label class="check"><input id="keepIntermediate" type="checkbox"> 中間ファイル（deramp 済み SLC）を残す</label>
+      </section>
+
+      <section class="danger-zone">
+        <details>
+          <summary>プロジェクトの削除</summary>
+          <p class="hint">プロジェクトのディレクトリ（設定・中間ファイル・成果物）をすべて削除します。入力データは削除しません。</p>
+          <div class="row">
+            <input id="deleteConfirm" type="text" placeholder="確認のためプロジェクト名を入力">
+            <button id="deleteBtn" type="button" class="danger">削除</button>
+          </div>
+        </details>
+      </section>
+    </form>
+
+    <div id="actions" hidden>
+      <div id="checkBox" class="info"></div>
+      <div class="row">
+        <button id="saveBtn" type="button">設定を保存</button>
+        <button id="runBtn" type="button" class="primary">▶ 実行（続きから）</button>
+        <button id="cancelBtn" type="button" class="danger" disabled>■ 中止</button>
+      </div>
+      <div class="row">
+        <select id="fromStep"></select>
+        <button id="rerunBtn" type="button" class="subtle">このステップから再実行</button>
+      </div>
+      <div id="dirtyNote" class="hint warn" hidden>未保存の変更があります</div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="map"></div>
+    <div id="resultPanel" class="map-panel" hidden>
+      <div class="panel-title">成果物の表示</div>
+      <div id="resultRadios"></div>
+      <label class="slider">不透明度 <input id="opacity" type="range" min="0" max="100" value="85"></label>
+      <div id="legend"></div>
+    </div>
+    <div id="mapHint" class="map-hint" hidden></div>
+
+    <section id="bottom">
+      <div id="steps"></div>
+      <div id="logPane">
+        <div class="log-head">
+          <span>ログ</span>
+          <select id="logSelect"></select>
+          <label class="check"><input id="logFollow" type="checkbox" checked> 自動スクロール</label>
+          <button id="outputsBtn" type="button" class="subtle">成果物一覧</button>
+        </div>
+        <pre id="log"></pre>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 新規プロジェクト -->
+<dialog id="newProjectDlg">
+  <form method="dialog" id="newProjectForm">
+    <h3>新規プロジェクト</h3>
+    <label class="field">プロジェクト名
+      <input id="newName" type="text" required maxlength="64" placeholder="例: noto2024_s1" spellcheck="false">
+    </label>
+    <p class="hint">英数字・日本語・_ - . が使えます。<code>projects/</code> 内に同名のディレクトリを作ります。</p>
+    <label class="field">説明（任意）<input id="newDesc" type="text"></label>
+    <div id="newProjectErr" class="error"></div>
+    <div class="row right">
+      <button value="cancel" type="button" id="newCancel" class="subtle">キャンセル</button>
+      <button value="ok" type="submit" class="primary">作成</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ファイルブラウザ -->
+<dialog id="fsDlg">
+  <div class="fs-head">
+    <button id="fsUp" type="button" class="subtle" title="上のフォルダへ">↑</button>
+    <input id="fsPath" type="text" spellcheck="false">
+    <button id="fsGo" type="button" class="subtle">移動</button>
+  </div>
+  <div id="fsFilter" class="hint"></div>
+  <ul id="fsList"></ul>
+  <div class="row right">
+    <button id="fsCancel" type="button" class="subtle">キャンセル</button>
+  </div>
+</dialog>
+
+<!-- 成果物一覧 -->
+<dialog id="outputsDlg">
+  <h3>成果物</h3>
+  <div id="outputsList"></div>
+  <div class="row right"><button id="outputsClose" type="button" class="subtle">閉じる</button></div>
+</dialog>
+
+<script src="/ccd3-static/vendor/leaflet/leaflet.js"></script>
+<script src="/ccd3-static/app.js"></script>
+</body>
+</html>

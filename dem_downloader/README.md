@@ -47,7 +47,21 @@ python run_dem_gui.py --port 9000 --no-browser
 | `dem_core.py` | タイル取得・モザイク・GeoTIFF 書き出し |
 | `geo_io.py` | CRS プリセット、参照ファイル読み込み、KML、地名検索 |
 | `static/` | フロントエンド |
+| `run_dem_cli.py` | **CLI**（plant-isce3 エクスプローラ等から subprocess 呼び出し用） |
 | `old/dem_downloader.py` | 以前の CLI 版（参考） |
+
+## CLI（他ツールから呼ぶ）
+
+`plant-isce3` 環境に `rasterio` を入れると依存が衝突しやすいため、国土地理院 DEM 取得だけ **この `dem_downloader` 環境**で行う運用を推奨します。
+
+```bash
+conda activate dem_downloader
+python run_dem_cli.py \
+  --west 130.6 --south 32.5 --east 130.9 --north 32.8 \
+  --output /tmp/dem_ellipsoid.tif --mode auto --height-mode ellipsoid
+```
+
+`plant-isce3/workbench` は上記を自動で呼び出します（環境 `dem_downloader` または `DEM_DOWNLOADER_PYTHON`）。
 | `tests/test_snap_profile.py` | SNAP 互換 GeoTIFF プロファイルの簡易チェック |
 
 ## テスト（任意）

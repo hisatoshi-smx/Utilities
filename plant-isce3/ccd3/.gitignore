@@ -1,0 +1,7 @@
+# プロジェクトの中身（設定・中間生成物・成果物）はリポジトリに含めない
+projects/*
+!projects/.gitkeep
+
+.scratch/
+__pycache__/
+.pytest_cache/
